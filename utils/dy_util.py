@@ -1,4 +1,5 @@
 import hashlib
+import os
 import re
 import sys
 import time
@@ -7,13 +8,31 @@ import random
 import base64
 import urllib
 from os import path
-
+import asyncio 
 import requests
 requests.packages.urllib3.disable_warnings()
 import subprocess
-from functools import partial
+from functools import partial, wraps
+ 
+_original_popen = subprocess.Popen
 
-subprocess.Popen = partial(subprocess.Popen, encoding="utf-8")
+@wraps(_original_popen)
+def _patched_popen(*args, **kwargs):
+    # # 修复 cwd：如果未提供或无效，则设为当前工作目录
+    # if 'cwd' not in kwargs or kwargs['cwd'] is None or not os.path.isdir(kwargs['cwd']):
+    #     kwargs['cwd'] = os.getcwd()
+    # # 二次保险：如果当前工作目录也不存在（极少见），回退到脚本所在目录
+    # if not os.path.isdir(kwargs['cwd']):
+    #     kwargs['cwd'] = os.path.dirname(os.path.abspath(__file__))
+    
+    # 设置默认编码为 utf-8（如果未指定 encoding 且未设置 text=True）
+    if 'encoding' not in kwargs and 'text' not in kwargs:
+        kwargs['encoding'] = 'utf-8'
+    
+    return _original_popen(*args, **kwargs)
+
+subprocess.Popen = _patched_popen
+
 import execjs
 
 if getattr(sys, 'frozen', None):

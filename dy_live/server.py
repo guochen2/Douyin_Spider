@@ -1,4 +1,7 @@
+import sys, os
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import gzip
+import json
 import threading
 import time
 from urllib.parse import urlencode
@@ -11,7 +14,7 @@ from builder.header import HeaderBuilder
 from builder.params import Params
 import utils.common_util as common_util
 from utils.dy_util import generate_signature
-
+import utils.redis_util as redis_util
 
 class DouyinLive:
     def __init__(self, live_id, auth_):
@@ -55,30 +58,66 @@ class DouyinLive:
                     # print(f'\033[1;37;40m[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 送出 \033[4;30;44m{message.gift.name}\033[m x {message.comboCount}')
                     # 谁给谁送了什么礼物
                     print(f'\033[1;37;40m[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 送给 \033[1;37;40m{message.toUser.sec_uid} - {message.toUser.nickname}\033[m \033[1;37;41m{message.gift.name}\033[m x {message.comboCount}')
+                    redis_util.redis_util.publish('self_message',json.dumps({
+                        'type': 'gift',
+                        'from_sec_uid': message.user.sec_uid,
+                        'from_nickname': message.user.nickname,
+                        'to_sec_uid': message.toUser.sec_uid,
+                        'to_nickname': message.toUser.nickname,
+                        'gift_name': message.gift.name,
+                        'gift_count': message.comboCount
+                    }, ensure_ascii=False))
                 elif item.method == "WebcastChatMessage":
                     message = Live_pb2.ChatMessage()
                     message.ParseFromString(item.payload)
                     # 用户等级
                     # print(message.user.badge_image_list[0])
                     print(f'\033[1;37;40m[消息]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m : \033[4;30;44m{message.content}\033[m')
+                    redis_util.redis_util.publish('self_message',json.dumps({
+                        'type': 'chat',
+                        'from_sec_uid': message.user.sec_uid,
+                        'from_nickname': message.user.nickname,
+                        'content': message.content
+                    }, ensure_ascii=False))
+                        
                 elif item.method == "WebcastMemberMessage":
                     message = Live_pb2.MemberMessage()
                     message.ParseFromString(item.payload)
                     print(f'\033[1;37;40m[进入]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 进入直播间')
+                    redis_util.redis_util.publish('self_message',json.dumps({
+                        'type': 'enter',
+                        'from_sec_uid': message.user.sec_uid,
+                        'from_nickname': message.user.nickname,
+                    }, ensure_ascii=False))
                 elif item.method == "WebcastLikeMessage":
                     message = Live_pb2.LikeMessage()
                     message.ParseFromString(item.payload)
                     print(f'\033[1;37;40m[点赞]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 点赞了 {message.count} 次')
+                    redis_util.redis_util.publish('self_message',json.dumps({
+                        'type': 'like',
+                        'from_sec_uid': message.user.sec_uid,
+                        'from_nickname': message.user.nickname,
+                        'count': message.count
+                    }, ensure_ascii=False))
                     print(f'\033[1;37;40m[点赞]点赞总数 = {message.total}\033[m')
                 elif item.method == "WebcastSocialMessage":
                     message = Live_pb2.SocialMessage()
                     message.ParseFromString(item.payload)
                     if message.action == 1:
                         print(f'\033[1;37;40m[关注]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 关注主播')
+                        redis_util.redis_util.publish('self_message',json.dumps({
+                            'type': 'follow',
+                            'from_sec_uid': message.user.sec_uid,
+                            'from_nickname': message.user.nickname
+                        }, ensure_ascii=False))
                 elif item.method == "WebcastRoomStatsMessage":
                     message = Live_pb2.RoomStatsMessage()
                     message.ParseFromString(item.payload)
                     print(f'\033[1;37;40m[房间信息] {message.displayLong}')
+                    redis_util.redis_util.publish('self_message',json.dumps({
+                        'type': 'room_stats',
+                        'display_long': message.displayLong
+                    }, ensure_ascii=False))
 
             # s = zlib.decompress(decode_str).decode()
         except Exception as e:
@@ -168,6 +207,6 @@ class DouyinLive:
 
 if __name__ == '__main__':
     common_util.load_env()
-    live_id = "571821134948"
-    live = DouyinLive(live_id, common_util.dy_live_auth)
+    live_id = "834644926106"
+    live = DouyinLive(live_id, common_util.dy_live_auth) 
     live.start_ws()

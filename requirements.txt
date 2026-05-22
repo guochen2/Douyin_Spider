@@ -9,3 +9,4 @@ PyExecJS
 requests
 argparse
 websockets
+redis==4.5.5
