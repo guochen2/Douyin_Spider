@@ -54,7 +54,7 @@ class DouyinLive:
                     message.ParseFromString(item.payload)
                     # print(f'\033[1;37;40m[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 送出 \033[4;30;44m{message.gift.name}\033[m x {message.comboCount}')
                     # 谁给谁送了什么礼物
-                    print(f'\033[1;37;40m[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 送给 \033[1;37;40m{message.toUser.sec_uid} - {message.toUser.nickname}\033[m \033[4;30;44m{message.gift.name}\033[m x {message.comboCount}')
+                    print(f'\033[1;37;40m[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 送给 \033[1;37;40m{message.toUser.sec_uid} - {message.toUser.nickname}\033[m \033[1;37;41m{message.gift.name}\033[m x {message.comboCount}')
                 elif item.method == "WebcastChatMessage":
                     message = Live_pb2.ChatMessage()
                     message.ParseFromString(item.payload)
