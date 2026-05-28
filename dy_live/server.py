@@ -139,6 +139,9 @@ class DouyinLive:
 
     def start_ws(self):
         room_info = DouyinAPI.get_live_info(self.auth_, self.live_id)
+        if room_info is None or isinstance(room_info, tuple):
+            print("\033[31m### 获取直播间信息失败 ###\033[m")
+            return
         room_id = room_info['room_id']
         user_id = room_info['user_id']
         ttwid = room_info['ttwid']
@@ -205,9 +208,23 @@ class DouyinLive:
             print(str(e))
             self.ws.close()
 
+CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'launcher_config.json')
 
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
 if __name__ == '__main__':
+    config = load_config()
+    # 写入环境变量 
+    os.environ['DY_LIVE_COOKIES'] = config.get('live_cookies', '')
+    os.environ['DY_COOKIES'] = config.get('cookies', '')
+    os.environ['DY_LIVE_ID'] = config.get('live_id', '')
     common_util.load_env()
-    live_id = os.getenv('DY_LIVE_ID', "400809649982")
+    live_id = os.getenv('DY_LIVE_ID', "")
     live = DouyinLive(live_id, common_util.dy_live_auth) 
     live.start_ws()
