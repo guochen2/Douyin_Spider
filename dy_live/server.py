@@ -208,7 +208,16 @@ class DouyinLive:
             print(str(e))
             self.ws.close()
 
-CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'launcher_config.json')
+def get_config_file():
+    if getattr(sys, 'frozen', None):
+        exe_dir = os.path.dirname(sys.executable)
+        config_file = os.path.join(exe_dir, 'launcher_config.json')
+        if os.path.exists(config_file):
+            return config_file
+        return os.path.join(os.getcwd(), 'launcher_config.json')
+    return os.path.join(os.path.dirname(__file__), 'launcher_config.json')
+
+CONFIG_FILE = get_config_file()
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -219,11 +228,14 @@ def load_config():
             return {}
     return {}
 if __name__ == '__main__':
+    # print(CONFIG_FILE)
     config = load_config()
     # 写入环境变量 
     os.environ['DY_LIVE_COOKIES'] = config.get('live_cookies', '')
     os.environ['DY_COOKIES'] = config.get('cookies', '')
     os.environ['DY_LIVE_ID'] = config.get('live_id', '')
+
+    
     common_util.load_env()
     live_id = os.getenv('DY_LIVE_ID', "")
     live = DouyinLive(live_id, common_util.dy_live_auth) 
