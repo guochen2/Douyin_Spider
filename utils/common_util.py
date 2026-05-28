@@ -6,7 +6,7 @@ dy_auth = None
 dy_live_auth = None
 def load_env():
     global dy_auth, dy_live_auth
-    load_dotenv()
+    load_dotenv(override=False)
     cookies_dy = os.getenv('DY_COOKIES')
     cookies_live = os.getenv('DY_LIVE_COOKIES')
     from builder.auth import DouyinAuth

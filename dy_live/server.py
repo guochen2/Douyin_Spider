@@ -38,6 +38,7 @@ class DouyinLive:
         threading.Thread(target=self.ping, args=(ws,)).start()
 
     def on_message(self, ws, message):
+        pdid=f"zbjpd_{self.live_id}"
         try:
             frame = Live_pb2.PushFrame()
             frame.ParseFromString(message)
@@ -58,7 +59,7 @@ class DouyinLive:
                     # print(f'\033[1;37;40m[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 送出 \033[4;30;44m{message.gift.name}\033[m x {message.comboCount}')
                     # 谁给谁送了什么礼物
                     print(f'\033[1;37;40m[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 送给 \033[1;37;40m{message.toUser.sec_uid} - {message.toUser.nickname}\033[m \033[1;37;41m{message.gift.name}\033[m x {message.comboCount}')
-                    redis_util.redis_util.publish('self_message',json.dumps({
+                    redis_util.redis_util.publish(pdid,json.dumps({
                         'type': 'gift',
                         'from_sec_uid': message.user.sec_uid,
                         'from_nickname': message.user.nickname,
@@ -73,7 +74,7 @@ class DouyinLive:
                     # 用户等级
                     # print(message.user.badge_image_list[0])
                     print(f'\033[1;37;40m[消息]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m : \033[4;30;44m{message.content}\033[m')
-                    redis_util.redis_util.publish('self_message',json.dumps({
+                    redis_util.redis_util.publish(pdid,json.dumps({
                         'type': 'chat',
                         'from_sec_uid': message.user.sec_uid,
                         'from_nickname': message.user.nickname,
@@ -84,7 +85,7 @@ class DouyinLive:
                     message = Live_pb2.MemberMessage()
                     message.ParseFromString(item.payload)
                     print(f'\033[1;37;40m[进入]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 进入直播间')
-                    redis_util.redis_util.publish('self_message',json.dumps({
+                    redis_util.redis_util.publish(pdid,json.dumps({
                         'type': 'enter',
                         'from_sec_uid': message.user.sec_uid,
                         'from_nickname': message.user.nickname,
@@ -93,7 +94,7 @@ class DouyinLive:
                     message = Live_pb2.LikeMessage()
                     message.ParseFromString(item.payload)
                     print(f'\033[1;37;40m[点赞]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 点赞了 {message.count} 次')
-                    redis_util.redis_util.publish('self_message',json.dumps({
+                    redis_util.redis_util.publish(pdid,json.dumps({
                         'type': 'like',
                         'from_sec_uid': message.user.sec_uid,
                         'from_nickname': message.user.nickname,
@@ -105,7 +106,7 @@ class DouyinLive:
                     message.ParseFromString(item.payload)
                     if message.action == 1:
                         print(f'\033[1;37;40m[关注]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 关注主播')
-                        redis_util.redis_util.publish('self_message',json.dumps({
+                        redis_util.redis_util.publish(pdid,json.dumps({
                             'type': 'follow',
                             'from_sec_uid': message.user.sec_uid,
                             'from_nickname': message.user.nickname
@@ -114,7 +115,7 @@ class DouyinLive:
                     message = Live_pb2.RoomStatsMessage()
                     message.ParseFromString(item.payload)
                     print(f'\033[1;37;40m[房间信息] {message.displayLong}')
-                    redis_util.redis_util.publish('self_message',json.dumps({
+                    redis_util.redis_util.publish(pdid,json.dumps({
                         'type': 'room_stats',
                         'display_long': message.displayLong
                     }, ensure_ascii=False))
@@ -131,7 +132,7 @@ class DouyinLive:
 
     def on_close(self, ws, close_status_code, close_msg):
         # 此处判断是否需要重连 判断直播间是否关闭
-        self.start_ws()
+        #self.start_ws()
         print("\033[31m### closed ###")
         print(f"status_code: {close_status_code}, msg: {close_msg}")
         print("### ===closed=== ###\033[m")
@@ -207,6 +208,6 @@ class DouyinLive:
 
 if __name__ == '__main__':
     common_util.load_env()
-    live_id = "834644926106"
+    live_id = os.getenv('DY_LIVE_ID', "400809649982")
     live = DouyinLive(live_id, common_util.dy_live_auth) 
     live.start_ws()

@@ -1,0 +1,1 @@
+D:\ProgramData\anaconda3\condabin\activate np310 && python dy_live/server.py
