@@ -1,0 +1,213 @@
+
+˚.
+
+Live.proto"5
+HeadersList
+key (	Rkey
+value (	Rvalue"õ
+	PushFrame
+seqId (RseqId
+logId (RlogId
+service (Rservice
+method (Rmethod.
+headersList (2.HeadersListRheadersList(
+payloadEncoding (	RpayloadEncoding 
+payloadType (	RpayloadType
+payload (Rpayload
+logIdNew	 (	RlogIdNew"Î
+Message
+method (	Rmethod
+payload (Rpayload
+msgId (RmsgId
+msgType (RmsgType
+offset (Roffset$
+needWrdsStore (RneedWrdsStore 
+wrdsVersion (RwrdsVersion
+
+wrdsSubKey (	R
+wrdsSubKey"û
+LiveResponse,
+messagesList (2.MessageRmessagesList
+cursor (	Rcursor$
+fetchInterval (RfetchInterval
+now (Rnow 
+internalExt (	RinternalExt
+	fetchType (R	fetchType@
+routeParams (2.LiveResponse.RouteParamsEntryRrouteParams,
+heartbeatDuration (RheartbeatDuration
+needAck	 (RneedAck
+
+pushServer
+ (	R
+pushServer
+
+liveCursor (	R
+liveCursor$
+historyNoMore (RhistoryNoMore 
+proxyServer (	RproxyServer>
+RouteParamsEntry
+key (	Rkey
+value (	Rvalue:8"+
+Image"
+content (2.ContentRcontent"}
+Content
+name (	Rname
+
+font_color (	R	fontColor
+level (Rlevel)
+alternative_text (	RalternativeText"ü
+User
+id (Rid
+short_id (RshortId
+nickname (	Rnickname
+gender (Rgender
+	signature (	R	signature
+level (Rlevel
+birthday (Rbirthday
+	telephone (	R	telephone
+verified (Rverified
+
+experience (R
+experience
+city (	Rcity
+status (Rstatus
+create_time (R
+createTime
+modify_time (R
+modifyTime
+secret (Rsecret(
+share_qrcode_uri (	RshareQrcodeUri0
+income_share_percent (RincomeSharePercent0
+badge_image_list (2.ImageRbadgeImageList
+
+special_id (	R	specialId
+
+top_vip_no (RtopVipNo
+	pay_score" (RpayScore!
+ticket_count# (RticketCount$
+link_mic_stats% (RlinkMicStats
+
+display_id& (	R	displayId8
+with_commerce_permission' (RwithCommercePermission3
+with_fusion_shop_entry( (RwithFusionShopEntry?
+total_recharge_diamond_count) (RtotalRechargeDiamondCount)
+verified_content+ (	RverifiedContent 
+top_fans- (2.UserRtopFans
+sec_uid. (	RsecUid
+	user_role/ (RuserRole-
+authorization_info6 (RauthorizationInfo@
+adversary_authorization_info7 (RadversaryAuthorizationInfo2
+adversary_user_status: (RadversaryUserStatus=
+commerce_webcast_config_ids< (RcommerceWebcastConfigIds#
+location_city? (	RlocationCity
+remark_nameA (	R
+remarkName
+mystery_manB (R
+mysteryMan
+web_ridC (	RwebRid3
+desensitized_nicknameD (	RdesensitizedNickname!
+is_anonymousG (RisAnonymous2
+consume_diamond_levelH (RconsumeDiamondLevel
+webcast_uidI (	R
+webcastUid)
+allow_be_locatedÈ (RallowBeLocated4
+allow_find_by_contactsÍ (RallowFindByContacts>
+allow_others_download_videoÎ (RallowOthersDownloadVideoV
+(allow_others_download_when_sharing_videoÏ (R#allowOthersDownloadWhenSharingVideo8
+allow_share_show_profileÌ (RallowShareShowProfile0
+allow_show_in_gossipÓ (RallowShowInGossip0
+allow_show_my_actionÔ (RallowShowMyAction3
+allow_strange_comment (RallowStrangeComment9
+allow_unfollower_commentÒ (RallowUnfollowerComment+
+allow_use_linkmicÚ (RallowUseLinkmic
+
+bg_img_urlı (	RbgImgUrl2
+birthday_descriptionˆ (	RbirthdayDescription&
+birthday_valid˜ (RbirthdayValid"
+block_status¯ (RblockStatus*
+comment_restrict˘ (RcommentRestrict%
+constellation˙ (	Rconstellation$
+disable_ichat˚ (RdisableIchat)
+enable_ichat_img¸ (RenableIchatImg
+exp˝ (Rexp)
+fan_ticket_count˛ (RfanTicketCount-
+fold_stranger_chatˇ (RfoldStrangerChat$
+follow_statusÄ (RfollowStatus*
+hotsoon_verifiedÅ (RhotsoonVerified7
+hotsoon_verified_reasonÇ (	RhotsoonVerifiedReason/
+ichat_restrict_typeÉ (RichatRestrictType
+id_strÑ (	RidStr 
+is_followerÖ (R
+isFollower"
+is_followingÜ (RisFollowing-
+need_profile_guideá (RneedProfileGuide
+
+pay_scoresà (R	payScores/
+push_comment_statusâ (RpushCommentStatus
+	push_diggä (RpushDigg 
+push_followã (R
+pushFollow-
+push_friend_actionå (RpushFriendAction
+
+push_ichatç (R	pushIchat 
+push_statusé (R
+pushStatus'
+push_video_postè (RpushVideoPost1
+push_video_recommendê (RpushVideoRecommend(
+verified_mobileí (RverifiedMobile(
+verified_reasonì (	RverifiedReasonD
+with_car_management_permissionî (RwithCarManagementPermission
+	age_rangeï (RageRange1
+watch_duration_monthñ (RwatchDurationMonth"l
+ChatMessage
+user (2.UserRuser
+content (	Rcontent(
+visibleToSender (RvisibleToSender"0
+
+GiftStruct
+id (Rid
+name (	Rname"⁄
+GiftMessage
+giftId (	RgiftId&
+fanTicketCount (RfanTicketCount
+
+groupCount (R
+groupCount 
+repeatCount (RrepeatCount
+
+comboCount (R
+comboCount
+user (2.UserRuser
+toUser (2.UserRtoUser
+gift (2.GiftStructRgift
+logId (	RlogId
+
+totalCount (R
+totalCount
+traceId# (	RtraceId"L
+MemberMessage
+user (2.UserRuser 
+memberCount (RmemberCount"~
+LikeMessage
+count (Rcount
+total (Rtotal
+color (Rcolor
+user (2.UserRuser
+icon (	Ricon"¿
+RoomStatsMessage"
+displayShort (	RdisplayShort$
+displayMiddle (	RdisplayMiddle 
+displayLong (	RdisplayLong"
+displayValue (RdisplayValue&
+displayVersion (RdisplayVersion 
+incremental (Rincremental
+isHidden (RisHidden
+total	 (Rtotal 
+displayType
+ (RdisplayType"§
+SocialMessage
+user (2.UserRuser
+	shareType (R	shareType
+action (Raction 
+shareTarget (	RshareTarget 
+followCount (RfollowCountbproto3

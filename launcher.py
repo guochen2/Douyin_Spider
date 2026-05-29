@@ -34,13 +34,21 @@ def on_start():
     
     config = {
         'live_id': live_id,
-        'cookies': cookies
+        'cookies': '',
+        'live_cookies': cookies
     }
     save_config(config)
     
-    server_path = os.path.join(os.path.dirname(__file__), 'dy_live', 'server.py')
+    server_exe_path = os.path.join(os.path.dirname(__file__), 'server.exe')
+    server_py_path = os.path.join(os.path.dirname(__file__), 'dy_live', 'server.py')
     
-    cmd_parts = [sys.executable, server_path]
+    if os.path.exists(server_exe_path):
+        cmd_parts = [server_exe_path]
+    elif os.path.exists(server_py_path):
+        cmd_parts = [sys.executable, server_py_path]
+    else:
+        messagebox.showerror("错误", "未找到 server.exe 或 server.py")
+        return
     
     env = os.environ.copy()
     env['DY_LIVE_COOKIES'] = cookies
@@ -84,7 +92,7 @@ entry_live_id.grid(row=1, column=0, columnspan=2, sticky=tk.EW, pady=(0, 15))
 
 ttk.Label(main_frame, text="Cookie:", font=('微软雅黑', 10, 'bold')).grid(row=2, column=0, sticky=tk.W, pady=(0, 5))
 entry_cookies = tk.Text(main_frame, width=50, height=10, font=('微软雅黑', 10))
-entry_cookies.insert("1.0", config.get('cookies', ''))
+entry_cookies.insert("1.0", config.get('live_cookies', ''))
 entry_cookies.grid(row=3, column=0, columnspan=2, sticky=tk.EW, pady=(0, 15))
 
 btn_frame = ttk.Frame(main_frame)

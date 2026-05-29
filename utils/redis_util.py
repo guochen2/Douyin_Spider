@@ -38,6 +38,16 @@ class RedisUtil:
         except RedisError as e:
             print(f"Redis GET 错误: {e}")
             return None
+        
+    def exists(self, key):
+        """判断 Redis 中是否存在某个 key"""
+        try:
+            # exists 返回 1=存在 0=不存在
+            return self.client.exists(key) == 1
+        except RedisError as e:
+            print(f"Redis EXISTS 错误: {e}")
+            return False
+        
 
     def set(self, key, value, ex=None):
         try:

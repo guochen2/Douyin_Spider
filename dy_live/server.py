@@ -1,3 +1,4 @@
+import hashlib
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import gzip
@@ -56,9 +57,24 @@ class DouyinLive:
                 if item.method == 'WebcastGiftMessage':
                     message = Live_pb2.GiftMessage()
                     message.ParseFromString(item.payload)
+                    # print(item)
+                    # print(message)
+                    # print(frame.logId)
                     # print(f'\033[1;37;40m[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 送出 \033[4;30;44m{message.gift.name}\033[m x {message.comboCount}')
                     # 谁给谁送了什么礼物
-                    print(f'\033[1;37;40m[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 送给 \033[1;37;40m{message.toUser.sec_uid} - {message.toUser.nickname}\033[m \033[1;37;41m{message.gift.name}\033[m x {message.comboCount}')
+                    # 礼物会重复 不知道为什么 会有两条一样的 所以需要特殊处理  如果上一条同一个人 同一个礼物存在 则不播放并且清除掉
+                    # key=f"{message.user.id}_{message.user.sec_uid}_{pdid}_{message.user.short_id}_{message.gift.id}_{message.comboCount}"
+            
+                    # print(message)
+                    key_md5=f"mc:{pdid}_{message.traceId}"
+                    if redis_util.redis_util.exists(key_md5):
+                        # redis_util.redis_util.delete(key_md5)
+                        print('礼物消息处理过了')
+                        # print(f'\033[1;37;40m[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 送给 \033[1;37;40m{message.toUser.sec_uid} - {message.toUser.nickname}\033[m \033[1;37;41m{message.gift.name}\033[m x {message.totalCount}')
+                        return
+                    redis_util.redis_util.set(key_md5,1,60)
+                    # print(message.gift.combo)
+                    print(f'\033[1;37;40m[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 送给 \033[1;37;40m{message.toUser.sec_uid} - {message.toUser.nickname}\033[m \033[1;37;41m{message.gift.name}\033[m x {message.totalCount}')
                     redis_util.redis_util.publish(pdid,json.dumps({
                         'type': 'gift',
                         'from_sec_uid': message.user.sec_uid,
@@ -66,7 +82,7 @@ class DouyinLive:
                         'to_sec_uid': message.toUser.sec_uid,
                         'to_nickname': message.toUser.nickname,
                         'gift_name': message.gift.name,
-                        'gift_count': message.comboCount
+                        'gift_count': message.totalCount
                     }, ensure_ascii=False))
                 elif item.method == "WebcastChatMessage":
                     message = Live_pb2.ChatMessage()
@@ -158,15 +174,15 @@ class DouyinLive:
          .add_param('compress', 'gzip')
          .add_param('device_platform', 'web')
          .add_param('cookie_enabled', 'true')
-         .add_param('screen_width', '1707')
-         .add_param('screen_height', '960')
+         .add_param('screen_width', '3440')
+         .add_param('screen_height', '1440')
          .add_param('browser_language', 'zh-CN')
          .add_param('browser_platform', 'Win32')
          .add_param('browser_name', 'Mozilla')
          .add_param('browser_version',
                     HeaderBuilder.ua.split('Mozilla/')[-1])
          .add_param('browser_online', 'true')
-         .add_param('tz_name', 'Etc/GMT-8')
+         .add_param('tz_name', 'Asia/Shanghai')
          .add_param('cursor', str(frame.cursor))
          .add_param('internal_ext', frame.internalExt)
          .add_param('host', 'https://live.douyin.com')
@@ -218,7 +234,12 @@ def get_config_file():
     return os.path.join(os.path.dirname(__file__), 'launcher_config.json')
 
 CONFIG_FILE = get_config_file()
-
+def get_md5(s: str) -> str:
+    # 1. 字符串必须转成 bytes 才能计算 md5
+    # 2. 使用 utf-8 编码最通用
+    md5_obj = hashlib.md5(s.encode("utf-8"))
+    # 返回 32 位小写 md5
+    return md5_obj.hexdigest()
 def load_config():
     if os.path.exists(CONFIG_FILE):
         try:
@@ -228,14 +249,16 @@ def load_config():
             return {}
     return {}
 if __name__ == '__main__':
-    # print(CONFIG_FILE)
+    print(CONFIG_FILE)
     config = load_config()
     # 写入环境变量 
-    os.environ['DY_LIVE_COOKIES'] = config.get('live_cookies', '')
-    os.environ['DY_COOKIES'] = config.get('cookies', '')
-    os.environ['DY_LIVE_ID'] = config.get('live_id', '')
-
-    
+    if config.get('live_cookies', ''):        
+        os.environ['DY_LIVE_COOKIES'] = config.get('live_cookies', '')
+    if config.get('cookies', ''):        
+        os.environ['DY_COOKIES'] = config.get('cookies', '')
+    if config.get('live_id', ''):
+        os.environ['DY_LIVE_ID'] = config.get('live_id', '')
+ 
     common_util.load_env()
     live_id = os.getenv('DY_LIVE_ID', "")
     live = DouyinLive(live_id, common_util.dy_live_auth) 
