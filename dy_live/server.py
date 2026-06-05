@@ -1,12 +1,14 @@
 import hashlib
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+
 import gzip
 import json
 import threading
 import time
 from urllib.parse import urlencode
 
+from google.protobuf.message import DecodeError
 from websocket import WebSocketApp
 
 import static.Live_pb2 as Live_pb2
@@ -24,6 +26,18 @@ class DouyinLive:
         self.ws = None
         self._stop_event = threading.Event()
         self._ping_thread = None
+        self._fetch_thread = None
+        self._room_id = ''
+        self._user_id = ''
+        self._cursor = ''
+        self._internal_ext = ''
+        self._live_page_url = ''
+        self._live_aborted = False
+        self._last_room_check_at = 0.0
+
+    LIVE_ROOM_STATUSES = {'2'}
+    ROOM_CHECK_INTERVAL = 15.0
+    COOKIE_ERROR_HINT = 'Cookie 无效或已过期，请重新登录获取 Cookie'
 
     def stop(self):
         self._stop_event.set()
@@ -36,10 +50,214 @@ class DouyinLive:
     def is_stopped(self):
         return self._stop_event.is_set()
 
+    def _channel(self):
+        return f"zbjpd_{self.live_id}"
+
+    def _is_room_live(self, room_info):
+        if not room_info or isinstance(room_info, tuple):
+            return False
+        status = str(room_info.get('room_status', '')).strip()
+        return status in self.LIVE_ROOM_STATUSES
+
+    def _abort_live(self, message):
+        if self._live_aborted:
+            return
+        self._live_aborted = True
+        print(f'\033[31m### {message}，关闭连接 ###\033[m')
+        self._publish_live_error(message)
+        self.stop()
+
+    def _check_room_live_status(self):
+        now = time.time()
+        if now - self._last_room_check_at < self.ROOM_CHECK_INTERVAL:
+            return True
+        self._last_room_check_at = now
+        room_info = DouyinAPI.get_live_info(self.auth_, self.live_id)
+        if room_info is None or isinstance(room_info, tuple):
+            return True
+        if self._is_room_live(room_info):
+            return True
+        self._abort_live(f'[{self.live_id}] 直播间未开播或已下播')
+        return False
+
+    def _parse_control_status(self, payload):
+        if not payload:
+            return None
+        index = 0
+        while index < len(payload):
+            tag = payload[index]
+            index += 1
+            field_number = tag >> 3
+            wire_type = tag & 0x07
+            if wire_type != 0:
+                break
+            value = 0
+            shift = 0
+            while index < len(payload):
+                byte = payload[index]
+                index += 1
+                value |= (byte & 0x7F) << shift
+                if not (byte & 0x80):
+                    break
+                shift += 7
+            if field_number == 1:
+                return value
+        return None
+
+    def _sync_auth_ttwid(self, ttwid):
+        if not ttwid:
+            return
+        self.auth_.cookie['ttwid'] = ttwid
+        self.auth_.cookie_str = '; '.join(f'{k}={v}' for k, v in self.auth_.cookie.items())
+
+    def _update_fetch_state(self, response):
+        if response.cursor:
+            self._cursor = response.cursor
+        if response.internalExt:
+            self._internal_ext = response.internalExt
+
+    def _send_ack(self, ws, log_id, internal_ext):
+        if ws is None or not internal_ext:
+            return
+        ack = Live_pb2.PushFrame()
+        ack.payloadType = 'ack'
+        ack.payload = internal_ext.encode('utf-8')
+        ack.logId = log_id
+        ws.send(ack.SerializeToString(), opcode=0x02)
+
+    def _dispatch_message(self, item):
+        pdid = self._channel()
+        if item.method == 'WebcastGiftMessage':
+            message = Live_pb2.GiftMessage()
+            message.ParseFromString(item.payload)
+            # print(
+            #     f'\033[1;37;40m[礼物]{message.user.nickname}\033[m '
+            #     f'送给 {message.toUser.nickname} \033[1;37;41m{message.gift.name}\033[m x {message.totalCount}'
+            # )
+            key_md5 = f'mc:{pdid}_{message.traceId}'
+            if redis_util.redis_util.exists(key_md5):
+                return
+            redis_util.redis_util.set(key_md5, 1, 60)
+            redis_util.redis_util.publish(pdid, json.dumps({
+                'type': 'gift',
+                'from_sec_uid': message.user.sec_uid,
+                'from_nickname': message.user.nickname,
+                'to_sec_uid': message.toUser.sec_uid,
+                'to_nickname': message.toUser.nickname,
+                'gift_name': message.gift.name,
+                'gift_count': message.totalCount,
+            }, ensure_ascii=False))
+        elif item.method == 'WebcastChatMessage':
+            message = Live_pb2.ChatMessage()
+            message.ParseFromString(item.payload)
+            # print(f'\033[1;37;40m[消息]{message.user.nickname}\033[m : {message.content}')
+            redis_util.redis_util.publish(pdid, json.dumps({
+                'type': 'chat',
+                'from_sec_uid': message.user.sec_uid,
+                'from_nickname': message.user.nickname,
+                'content': message.content,
+            }, ensure_ascii=False))
+        elif item.method == 'WebcastMemberMessage':
+            message = Live_pb2.MemberMessage()
+            message.ParseFromString(item.payload)
+            # print(f'\033[1;37;40m[进入]{message.user.nickname}\033[m 进入直播间')
+            redis_util.redis_util.publish(pdid, json.dumps({
+                'type': 'enter',
+                'from_sec_uid': message.user.sec_uid,
+                'from_nickname': message.user.nickname,
+            }, ensure_ascii=False))
+        elif item.method == 'WebcastLikeMessage':
+            message = Live_pb2.LikeMessage()
+            message.ParseFromString(item.payload)
+            # print(f'\033[1;37;40m[点赞]{message.user.nickname}\033[m 点赞 {message.count} 次')
+            redis_util.redis_util.publish(pdid, json.dumps({
+                'type': 'like',
+                'from_sec_uid': message.user.sec_uid,
+                'from_nickname': message.user.nickname,
+                'count': message.count,
+            }, ensure_ascii=False))
+        elif item.method == 'WebcastSocialMessage':
+            message = Live_pb2.SocialMessage()
+            message.ParseFromString(item.payload)
+            if message.action == 1:
+                # print(f'\033[1;37;40m[关注]{message.user.nickname}\033[m 关注主播')
+                redis_util.redis_util.publish(pdid, json.dumps({
+                    'type': 'follow',
+                    'from_sec_uid': message.user.sec_uid,
+                    'from_nickname': message.user.nickname,
+                }, ensure_ascii=False))
+        elif item.method == 'WebcastRoomStatsMessage':
+            message = Live_pb2.RoomStatsMessage()
+            message.ParseFromString(item.payload)
+            # print(f'\033[1;37;40m[房间信息] {message.displayLong}')
+            redis_util.redis_util.publish(pdid, json.dumps({
+                'type': 'room_stats',
+                'display_long': message.displayLong,
+            }, ensure_ascii=False))
+        elif item.method == 'WebcastControlMessage':
+            status = self._parse_control_status(item.payload)
+            if status in (3, 4):
+                self._abort_live(f'[{self.live_id}] 直播间已结束 (status={status})')
+
+    def _process_live_response(self, ws, response, log_id=0):
+        if self._live_aborted:
+            return 0
+        self._update_fetch_state(response)
+        if response.needAck:
+            self._send_ack(ws, log_id, response.internalExt)
+        if not response.messagesList:
+            return 0
+        for item in response.messagesList:
+            try:
+                self._dispatch_message(item)
+            except Exception as e:
+                print(f'[{self.live_id}] 解析消息失败 method={item.method}: {e}')
+        return len(response.messagesList)
+
+    def _fetch_im_messages(self):
+        if not self._room_id or not self._user_id:
+            return None
+        res = DouyinAPI.get_webcast_detail(
+            self.auth_,
+            str(self._user_id),
+            self._room_id,
+            self._live_page_url,
+            cursor=self._cursor,
+            internal_ext=self._internal_ext,
+        )
+        if not res:
+            return None
+        response, err = self._parse_live_response_bytes(res)
+        if err:
+            self._fail_cookie_error(err)
+            return None
+        count = self._process_live_response(None, response)
+        return response.fetchInterval, count
+
+    def _fetch_loop(self):
+        while not self._stop_event.is_set():
+            if not self._check_room_live_status():
+                break
+            try:
+                result = self._fetch_im_messages()
+                if self._live_aborted:
+                    break
+                if result is None:
+                    wait_seconds = 1.0
+                else:
+                    fetch_interval, _count = result
+                    wait_seconds = fetch_interval / 1000 if fetch_interval else 1.0
+                    wait_seconds = max(min(wait_seconds, 3.0), 0.5)
+            except Exception as e:
+                print(f'[{self.live_id}] im/fetch 轮询异常: {e}')
+                wait_seconds = 3.0
+            if self._stop_event.wait(wait_seconds):
+                break
+
     def ping(self, ws):
         while not self._stop_event.is_set():
             frame = Live_pb2.PushFrame()
-            frame.payloadType = "hb"
+            frame.payloadType = 'hb'
             try:
                 ws.send(frame.SerializeToString(), opcode=0x02)
             except Exception:
@@ -49,135 +267,117 @@ class DouyinLive:
                 break
 
     def on_open(self, ws):
-        print(f"\033[32m### opened [{self.live_id}] ###\033[m")
-        self._ping_thread = threading.Thread(target=self.ping, args=(ws,), daemon=True)
+        if self._live_aborted:
+            ws.close()
+            return
+        print(f'\033[32m### opened [{self.live_id}] ###\033[m')
+        redis_util.redis_util.publish(self._channel(), json.dumps({
+            'type': 'listening',
+            'live_id': self.live_id,
+        }, ensure_ascii=False))
+        self._ping_thread = threading.Thread(target=self.ping, args=(ws,), name=f'ping-{self.live_id}', daemon=True)
         self._ping_thread.start()
 
     def on_message(self, ws, message):
-        pdid=f"zbjpd_{self.live_id}"
         try:
             frame = Live_pb2.PushFrame()
             frame.ParseFromString(message)
             origin_bytes = gzip.decompress(frame.payload)
             response = Live_pb2.LiveResponse()
             response.ParseFromString(origin_bytes)
-            if response.needAck:
-                s = Live_pb2.PushFrame()
-                s.payloadType = "ack"
-                # s.payload = frame.headersList[1].value.encode('utf-8')
-                s.payload = response.internalExt.encode('utf-8')
-                s.logId = frame.logId
-                ws.send(s.SerializeToString(), opcode=0x02)
-            for item in response.messagesList:
-                if item.method == 'WebcastGiftMessage':
-                    message = Live_pb2.GiftMessage()
-                    message.ParseFromString(item.payload)
-                    # print(item)
-                    # print(message)
-                    # print(frame.logId)
-                    # print(f'\033[1;37;40m[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 送出 \033[4;30;44m{message.gift.name}\033[m x {message.comboCount}')
-                    # 谁给谁送了什么礼物
-                    # 礼物会重复 不知道为什么 会有两条一样的 所以需要特殊处理  如果上一条同一个人 同一个礼物存在 则不播放并且清除掉
-                    # key=f"{message.user.id}_{message.user.sec_uid}_{pdid}_{message.user.short_id}_{message.gift.id}_{message.comboCount}"
-            
-                    # print(message)
-                    key_md5=f"mc:{pdid}_{message.traceId}"
-                    if redis_util.redis_util.exists(key_md5):
-                        # redis_util.redis_util.delete(key_md5)
-                        print('礼物消息处理过了')
-                        # print(f'\033[1;37;40m[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 送给 \033[1;37;40m{message.toUser.sec_uid} - {message.toUser.nickname}\033[m \033[1;37;41m{message.gift.name}\033[m x {message.totalCount}')
-                        return
-                    redis_util.redis_util.set(key_md5,1,60)
-                    # print(message.gift.combo)
-                    # print(f'\033[1;37;40m[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 送给 \033[1;37;40m{message.toUser.sec_uid} - {message.toUser.nickname}\033[m \033[1;37;41m{message.gift.name}\033[m x {message.totalCount}')
-                    redis_util.redis_util.publish(pdid,json.dumps({
-                        'type': 'gift',
-                        'from_sec_uid': message.user.sec_uid,
-                        'from_nickname': message.user.nickname,
-                        'to_sec_uid': message.toUser.sec_uid,
-                        'to_nickname': message.toUser.nickname,
-                        'gift_name': message.gift.name,
-                        'gift_count': message.totalCount
-                    }, ensure_ascii=False))
-                elif item.method == "WebcastChatMessage":
-                    message = Live_pb2.ChatMessage()
-                    message.ParseFromString(item.payload)
-                    # 用户等级
-                    # print(message.user.badge_image_list[0])
-                    # print(f'\033[1;37;40m[消息]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m : \033[4;30;44m{message.content}\033[m')
-                    redis_util.redis_util.publish(pdid,json.dumps({
-                        'type': 'chat',
-                        'from_sec_uid': message.user.sec_uid,
-                        'from_nickname': message.user.nickname,
-                        'content': message.content
-                    }, ensure_ascii=False))
-                        
-                elif item.method == "WebcastMemberMessage":
-                    message = Live_pb2.MemberMessage()
-                    message.ParseFromString(item.payload)
-                    # print(f'\033[1;37;40m[进入]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 进入直播间')
-                    redis_util.redis_util.publish(pdid,json.dumps({
-                        'type': 'enter',
-                        'from_sec_uid': message.user.sec_uid,
-                        'from_nickname': message.user.nickname,
-                    }, ensure_ascii=False))
-                elif item.method == "WebcastLikeMessage":
-                    message = Live_pb2.LikeMessage()
-                    message.ParseFromString(item.payload)
-                    # print(f'\033[1;37;40m[点赞]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 点赞了 {message.count} 次')
-                    redis_util.redis_util.publish(pdid,json.dumps({
-                        'type': 'like',
-                        'from_sec_uid': message.user.sec_uid,
-                        'from_nickname': message.user.nickname,
-                        'count': message.count
-                    }, ensure_ascii=False))
-                    print(f'\033[1;37;40m[点赞]点赞总数 = {message.total}\033[m')
-                elif item.method == "WebcastSocialMessage":
-                    message = Live_pb2.SocialMessage()
-                    message.ParseFromString(item.payload)
-                    if message.action == 1:
-                        # print(f'\033[1;37;40m[关注]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 关注主播')
-                        redis_util.redis_util.publish(pdid,json.dumps({
-                            'type': 'follow',
-                            'from_sec_uid': message.user.sec_uid,
-                            'from_nickname': message.user.nickname
-                        }, ensure_ascii=False))
-                elif item.method == "WebcastRoomStatsMessage":
-                    message = Live_pb2.RoomStatsMessage()
-                    message.ParseFromString(item.payload)
-                    # print(f'\033[1;37;40m[房间信息] {message.displayLong}')
-                    redis_util.redis_util.publish(pdid,json.dumps({
-                        'type': 'room_stats',
-                        'display_long': message.displayLong
-                    }, ensure_ascii=False))
-
-            # s = zlib.decompress(decode_str).decode()
+            count = self._process_live_response(ws, response, frame.logId)
+            # if count:
+                # print(f'[{self.live_id}] WS 收到 {count} 条消息')
         except Exception as e:
-            print('error')
-            print(str(e))
+            print(f'[{self.live_id}] WS 消息解析失败: {e}')
 
     def on_error(self, ws, error):
-        print("\033[31m### error ###")
+        print('\033[31m### error ###')
         print(error)
-        print("### ===error=== ###\033[m")
+        print('### ===error=== ###\033[m')
 
     def on_close(self, ws, close_status_code, close_msg):
-        print(f"\033[31m### closed [{self.live_id}] ###")
-        print(f"status_code: {close_status_code}, msg: {close_msg}")
-        print("### ===closed=== ###\033[m")
+        print(f'\033[31m### closed [{self.live_id}] ###')
+        print(f'status_code: {close_status_code}, msg: {close_msg}')
+        print('### ===closed=== ###\033[m')
+
+    def _publish_live_error(self, message):
+        redis_util.redis_util.publish(self._channel(), json.dumps({
+            'type': 'live_error',
+            'live_id': self.live_id,
+            'message': message,
+        }, ensure_ascii=False))
+
+    def _fail_cookie_error(self, detail=None):
+        message = f'[{self.live_id}] {self.COOKIE_ERROR_HINT}'
+        if detail:
+            print(f'\033[31m### [{self.live_id}] {detail} ###\033[m')
+        self._publish_live_error(message)
+        self._live_aborted = True
+
+    def _looks_like_non_protobuf_payload(self, data):
+        if not data:
+            return True
+        sample = data[:256].lstrip()
+        if not sample:
+            return True
+        if sample[:1] in (b'<', b'{', b'['):
+            return True
+        if b'html' in sample[:128].lower() or b'<!doctype' in sample[:128].lower():
+            return True
+        return False
+
+    def _parse_live_response_bytes(self, data):
+        if self._looks_like_non_protobuf_payload(data):
+            return None, self.COOKIE_ERROR_HINT
+        try:
+            response = Live_pb2.LiveResponse()
+            response.ParseFromString(data)
+            return response, None
+        except DecodeError:
+            return None, self.COOKIE_ERROR_HINT
+        except Exception as e:
+            return None, f'解析直播数据失败: {e}'
 
     def _build_ws(self):
-        room_info = DouyinAPI.get_live_info(self.auth_, self.live_id)
-        if room_info is None or isinstance(room_info, tuple):
-            print(f"\033[31m### [{self.live_id}] 获取直播间信息失败 ###\033[m")
-            return None
-        room_id = room_info['room_id']
-        user_id = room_info['user_id']
-        params = Params()
+        try:
+            room_info = DouyinAPI.get_live_info(self.auth_, self.live_id)
+            if room_info is None or isinstance(room_info, tuple):
+                err = f'[{self.live_id}] 获取直播间信息失败，请检查 Cookie 或直播间是否开播'
+                print(f'\033[31m### {err} ###\033[m')
+                self._publish_live_error(err)
+                self._live_aborted = True
+                return None
 
-        res = DouyinAPI.get_webcast_detail(self.auth_, str(user_id), room_id, f"https://live.douyin.com/{self.live_id}")
-        frame = Live_pb2.LiveResponse()
-        frame.ParseFromString(res)
+            if not self._is_room_live(room_info):
+                self._abort_live(f'[{self.live_id}] 直播间未开播')
+                return None
+
+            self._sync_auth_ttwid(room_info.get('ttwid'))
+            self._room_id = room_info['room_id']
+            self._user_id = room_info['user_id']
+            self._live_page_url = f'https://live.douyin.com/{self.live_id}'
+
+            res = DouyinAPI.get_webcast_detail(
+                self.auth_,
+                str(self._user_id),
+                self._room_id,
+                self._live_page_url,
+            )
+            bootstrap, err = self._parse_live_response_bytes(res)
+            if err:
+                self._fail_cookie_error(err)
+                return None
+            bootstrap_count = self._process_live_response(None, bootstrap)
+            print(
+                f'[{self.live_id}] 初始 im/fetch: messages={bootstrap_count}, '
+                f'cursor={self._cursor[:48] if self._cursor else "-"}'
+            )
+        except Exception as e:
+            self._fail_cookie_error(f'启动监听失败: {e}')
+            return None
+
+        params = Params()
         (params
          .add_param('app_name', 'douyin_web')
          .add_param('version_code', '180800')
@@ -191,29 +391,28 @@ class DouyinLive:
          .add_param('browser_language', 'zh-CN')
          .add_param('browser_platform', 'Win32')
          .add_param('browser_name', 'Mozilla')
-         .add_param('browser_version',
-                    HeaderBuilder.ua.split('Mozilla/')[-1])
+         .add_param('browser_version', HeaderBuilder.ua.split('Mozilla/')[-1])
          .add_param('browser_online', 'true')
          .add_param('tz_name', 'Asia/Shanghai')
-         .add_param('cursor', str(frame.cursor))
-         .add_param('internal_ext', frame.internalExt)
+         .add_param('cursor', str(self._cursor))
+         .add_param('internal_ext', self._internal_ext)
          .add_param('host', 'https://live.douyin.com')
          .add_param('aid', '6383')
          .add_param('live_id', '1')
          .add_param('did_rule', '3')
          .add_param('endpoint', 'live_pc')
          .add_param('support_wrds', '1')
-         .add_param('user_unique_id', str(user_id))
+         .add_param('user_unique_id', str(self._user_id))
          .add_param('im_path', '/webcast/im/fetch/')
          .add_param('identity', 'audience')
          .add_param('need_persist_msg_count', '15')
          .add_param('insert_task_id', '')
          .add_param('live_reason', '')
-         .add_param('room_id', room_id)
+         .add_param('room_id', self._room_id)
          .add_param('heartbeatDuration', '0')
-         .add_param('signature', generate_signature(room_id, user_id))
+         .add_param('signature', generate_signature(self._room_id, self._user_id))
          )
-        wss_url = f"wss://webcast100-ws-web-hl.douyin.com/webcast/im/push/v2/?{urlencode(params.get())}"
+        wss_url = f'wss://webcast100-ws-web-hl.douyin.com/webcast/im/push/v2/?{urlencode(params.get())}'
         return WebSocketApp(
             url=wss_url,
             header={
@@ -228,30 +427,43 @@ class DouyinLive:
             on_message=self.on_message,
             on_error=self.on_error,
             on_close=self.on_close,
-            on_open=self.on_open
+            on_open=self.on_open,
         )
 
     def start_ws(self, reconnect=True, reconnect_delay=5):
+        self._live_aborted = False
         while not self._stop_event.is_set():
             self.ws = self._build_ws()
             if self.ws is None:
-                if not reconnect or self._stop_event.wait(reconnect_delay):
+                if self._live_aborted or not reconnect:
+                    break
+                if self._stop_event.wait(reconnect_delay):
                     break
                 continue
+
+            if not self._fetch_thread or not self._fetch_thread.is_alive():
+                self._fetch_thread = threading.Thread(
+                    target=self._fetch_loop,
+                    name=f'fetch-{self.live_id}',
+                    daemon=True,
+                )
+                self._fetch_thread.start()
+                print(f'[{self.live_id}] im/fetch 轮询已启动')
+
             try:
                 self.ws.run_forever(origin='https://live.douyin.com')
             except Exception as e:
-                print(f"[{self.live_id}] ws error: {e}")
+                print(f'[{self.live_id}] ws error: {e}')
                 if self.ws:
                     try:
                         self.ws.close()
                     except Exception:
                         pass
-            if self._stop_event.is_set():
+            if self._stop_event.is_set() or self._live_aborted:
                 break
             if not reconnect:
                 break
-            print(f"[{self.live_id}] {reconnect_delay}s 后重连...")
+            print(f'[{self.live_id}] {reconnect_delay}s 后重连...')
             if self._stop_event.wait(reconnect_delay):
                 break
 
@@ -285,7 +497,10 @@ def load_config():
             return {}
     return {}
 if __name__ == '__main__':
-    print(CONFIG_FILE)
+    from utils.console_util import setup_console_utf8
+
+    setup_console_utf8()
+    # print(CONFIG_FILE)
     config = load_config()
     # 写入环境变量 
     if config.get('live_cookies', ''):        

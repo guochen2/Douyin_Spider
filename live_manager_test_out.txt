@@ -1,0 +1,7 @@
+配置文件: D:\Colin\work\live\Douyin_Spider\launcher_config.json
+[manager] 配置文件: D:\Colin\work\live\Douyin_Spider\launcher_config.json
+[manager] control_channel=dy_live:control
+[manager] 监听 Redis 控制频道: dy_live:control
+[manager] 控制消息格式: {"action": "start"|"stop", "live_id": "房间号", "cookie": "..."}
+[manager] 心跳 Key 前缀=dy_live:heartbeat:, 检测间隔=5.0s
+[manager] 已订阅控制频道: dy_live:control

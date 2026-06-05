@@ -5,6 +5,10 @@ import json
 import tkinter as tk
 from tkinter import ttk, messagebox
 
+from utils.console_util import setup_console_utf8
+
+setup_console_utf8()
+
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'launcher_config.json')
 
 def load_config():
@@ -21,21 +25,21 @@ def save_config(config):
         json.dump(config, f, ensure_ascii=False, indent=2)
 
 def on_start():
-    redis_list_key = entry_redis_key.get().strip() or 'dy_live:rooms'
-    poll_interval = entry_poll_interval.get().strip() or '3'
+    control_channel = entry_control_channel.get().strip() or 'dy_live:control'
 
     try:
-        poll_interval_val = float(poll_interval)
-        if poll_interval_val <= 0:
-            raise ValueError
-    except ValueError:
-        messagebox.showerror("错误", "轮询间隔必须是大于 0 的数字")
+        import redis  # noqa: F401
+    except ImportError:
+        messagebox.showerror(
+            "错误",
+            "当前 Python 环境缺少 redis 模块。\n"
+            "请激活正确的 conda 环境（如 p310）后重试，或执行：pip install redis",
+        )
         return
 
     config = load_config()
     config.update({
-        'redis_list_key': redis_list_key,
-        'poll_interval': poll_interval_val,
+        'redis_control_channel': control_channel,
     })
     save_config(config)
 
@@ -57,18 +61,21 @@ def on_start():
         startupinfo.wShowWindow = 1
 
     try:
+        env = os.environ.copy()
+        env['PYTHONIOENCODING'] = 'utf-8'
+        env['PYTHONUTF8'] = '1'
         subprocess.Popen(
             cmd_parts,
-            env=os.environ.copy(),
+            env=env,
             startupinfo=startupinfo,
             creationflags=subprocess.CREATE_NEW_CONSOLE,
             cwd=os.path.dirname(__file__),
         )
-        messagebox.showinfo(
-            "成功",
-            f"Redis 监听服务已启动！\n列表 Key: {redis_list_key}\n"
-            "Cookie 与房间号均从 Redis 列表读取。",
-        )
+        # messagebox.showinfo(
+        #     "成功",
+        #     f"Redis 监听服务已启动！\n控制频道: {control_channel}\n"
+        #     "客户端通过发布订阅发送 start/stop 命令。",
+        # )
         root.destroy()
     except Exception as e:
         messagebox.showerror("错误", f"启动失败: {str(e)}")
@@ -77,7 +84,7 @@ config = load_config()
 
 root = tk.Tk()
 root.title("抖音直播 Redis 监听启动器")
-root.geometry("520x220")
+root.geometry("520x180")
 root.resizable(False, False)
 
 style = ttk.Style()
@@ -88,29 +95,22 @@ style.configure('TButton', font=('微软雅黑', 12, 'bold'))
 main_frame = ttk.Frame(root, padding="20")
 main_frame.pack(fill=tk.BOTH, expand=True)
 
-ttk.Label(main_frame, text="Redis 列表 Key:", font=('微软雅黑', 10, 'bold')).grid(
+ttk.Label(main_frame, text="Redis 控制频道:", font=('微软雅黑', 10, 'bold')).grid(
     row=0, column=0, sticky=tk.W, pady=(0, 5)
 )
-entry_redis_key = ttk.Entry(main_frame, width=50)
-entry_redis_key.insert(0, config.get('redis_list_key', 'dy_live:rooms'))
-entry_redis_key.grid(row=1, column=0, columnspan=2, sticky=tk.EW, pady=(0, 10))
-
-ttk.Label(main_frame, text="轮询间隔(秒):", font=('微软雅黑', 10, 'bold')).grid(
-    row=2, column=0, sticky=tk.W, pady=(0, 5)
-)
-entry_poll_interval = ttk.Entry(main_frame, width=20)
-entry_poll_interval.insert(0, str(config.get('poll_interval', 3)))
-entry_poll_interval.grid(row=3, column=0, sticky=tk.W, pady=(0, 15))
+entry_control_channel = ttk.Entry(main_frame, width=50)
+entry_control_channel.insert(0, config.get('redis_control_channel', 'dy_live:control'))
+entry_control_channel.grid(row=1, column=0, columnspan=2, sticky=tk.EW, pady=(0, 10))
 
 ttk.Label(
     main_frame,
-    text='列表项格式: {"live_id": "房间号", "cookie": "..."}',
+    text='控制消息: {"action": "start"|"stop", "live_id": "房间号", "cookie": "..."}',
     font=('微软雅黑', 9),
     foreground='#666666',
-).grid(row=4, column=0, columnspan=2, sticky=tk.W, pady=(0, 10))
+).grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(0, 10))
 
 btn_frame = ttk.Frame(main_frame)
-btn_frame.grid(row=5, column=0, columnspan=2, pady=(10, 0))
+btn_frame.grid(row=3, column=0, columnspan=2, pady=(10, 0))
 
 btn_start = ttk.Button(btn_frame, text="启动 Redis 监听服务", command=on_start, width=24)
 btn_start.pack()

@@ -795,7 +795,7 @@ class DouyinAPI:
                         "room_status": room_status,
                         "room_title": room_title
                     }
-                    print(res)
+                    # print(res)
                     return res
                 except Exception as e:
                     pass
@@ -1526,7 +1526,7 @@ class DouyinAPI:
         return response.json()
 
     @staticmethod
-    def get_webcast_detail(auth, user_id, room_id, url: str):
+    def get_webcast_detail(auth, user_id, room_id, url: str, cursor='', internal_ext=''):
         api = f"/webcast/im/fetch/"
         headers = HeaderBuilder().build(HeaderType.FORM)
         headers.set_header("origin", DouyinAPI.live_url)
@@ -1550,8 +1550,8 @@ class DouyinAPI:
         params.add_param("live_id", "1")
         params.add_param("aid", "6383")
         params.add_param("fetch_rule", "1")
-        params.add_param("cursor", "")
-        params.add_param("internal_ext", "")
+        params.add_param("cursor", cursor or "")
+        params.add_param("internal_ext", internal_ext or "")
         params.add_param("device_platform", "web")
         params.add_param("cookie_enabled", "true")
         params.add_param("screen_width", "2560")
@@ -1940,7 +1940,7 @@ if __name__ == '__main__':
     live_url = "https://live.douyin.com/852953608964"
     live_id = "852953608964"
     res = DouyinAPI.get_live_info(auth_, live_id)
-    print(res)
+    # print(res)
 
     room_id = res['room_id']
     anchor_id = res['anchor_id']

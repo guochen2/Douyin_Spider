@@ -6,9 +6,18 @@ import time
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
+from utils.console_util import setup_console_utf8
+
+setup_console_utf8()
+
 import utils.redis_util as redis_util
 from builder.auth import DouyinAuth
 from dy_live.server import DouyinLive, get_config_file, load_config
+
+DEFAULT_CONTROL_CHANNEL = 'dy_live:control'
+HEARTBEAT_KEY_PREFIX = 'dy_live:heartbeat:'
+HEARTBEAT_CHECK_INTERVAL = 5
+HEARTBEAT_START_GRACE_SECONDS = 15
 
 
 def create_live_auth(cookie_str):
@@ -17,10 +26,15 @@ def create_live_auth(cookie_str):
     return auth
 
 
-def parse_room_entry(raw):
+def build_heartbeat_key(live_id):
+    return f'{HEARTBEAT_KEY_PREFIX}{live_id}'
+
+
+def parse_control_command(raw):
     """
-    解析 Redis 列表项，必须同时包含 live_id 与 cookie。
-    格式: {"live_id": "房间号", "cookie": "cookie字符串"}
+    解析 Redis 控制频道消息。
+    格式: {"action": "start"|"stop", "live_id": "房间号", "cookie": "..."}
+    start 必须包含 cookie；stop 只需 live_id。
     """
     if not raw:
         return None
@@ -30,32 +44,76 @@ def parse_room_entry(raw):
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        print(f"[manager] 跳过无效条目（需 JSON 格式）: {text[:80]}...")
+        print(f'[manager] 跳过无效控制消息（需 JSON 格式）: {text[:80]}...')
         return None
     if not isinstance(data, dict):
         return None
+    action = str(data.get('action', '')).strip().lower()
     live_id = str(data.get('live_id', '')).strip()
-    cookie = str(data.get('cookie', '')).strip()
-    if not live_id or not cookie:
-        print(f"[manager] 跳过不完整条目（缺少 live_id 或 cookie）: {text[:80]}...")
+    if action not in ('start', 'stop') or not live_id:
+        print(f'[manager] 跳过不完整控制消息: {text[:80]}...')
         return None
-    return live_id, cookie
+    if action == 'start':
+        cookie = str(data.get('cookie', '')).strip()
+        if not cookie:
+            print(f'[manager] start 命令缺少 cookie: live_id={live_id}')
+            return None
+        return action, live_id, cookie
+    return action, live_id, None
 
 
 class LiveRoomWorker:
-    def __init__(self, live_id, cookie, reconnect_delay=5):
+    def __init__(
+        self,
+        live_id,
+        cookie,
+        reconnect_delay=5,
+        heartbeat_key=None,
+        heartbeat_check_interval=HEARTBEAT_CHECK_INTERVAL,
+        on_stopped=None,
+    ):
         self.live_id = live_id
         self.cookie = cookie
         self.live = DouyinLive(live_id, create_live_auth(cookie))
         self.reconnect_delay = reconnect_delay
+        self.heartbeat_key = heartbeat_key
+        self.heartbeat_check_interval = heartbeat_check_interval
+        self.on_stopped = on_stopped
         self.thread = threading.Thread(
             target=self._run,
-            name=f"live-{live_id}",
+            name=f'live-{live_id}',
             daemon=True,
         )
 
+    def _heartbeat_loop(self):
+        grace_until = time.time() + HEARTBEAT_START_GRACE_SECONDS
+        while not self.live.is_stopped():
+            if time.time() >= grace_until:
+                if self.heartbeat_key and not redis_util.redis_util.exists(self.heartbeat_key):
+                    print(f'[manager] 心跳过期，主动关闭监听: {self.live_id}')
+                    self.live.stop()
+                    break
+            if self.live._stop_event.wait(self.heartbeat_check_interval):
+                break
+
     def _run(self):
-        self.live.start_ws(reconnect=True, reconnect_delay=self.reconnect_delay)
+        heartbeat_thread = None
+        if self.heartbeat_key:
+            heartbeat_thread = threading.Thread(
+                target=self._heartbeat_loop,
+                name=f'heartbeat-{self.live_id}',
+                daemon=True,
+            )
+            heartbeat_thread.start()
+        try:
+            self.live.start_ws(reconnect=True, reconnect_delay=self.reconnect_delay)
+        except Exception as e:
+            print(f'[manager] [{self.live_id}] 监听线程异常: {e}')
+            if not self.live._live_aborted:
+                self.live._fail_cookie_error(f'监听线程异常: {e}')
+        finally:
+            if self.on_stopped:
+                self.on_stopped(self.live_id)
 
     def start(self):
         self.thread.start()
@@ -69,102 +127,78 @@ class LiveRoomWorker:
 class LiveRoomManager:
     def __init__(
         self,
-        list_key,
-        poll_interval=3,
+        control_channel=DEFAULT_CONTROL_CHANNEL,
         start_batch_size=20,
         start_batch_delay=0.05,
         reconnect_delay=5,
-        use_keyspace_notify=True,
+        heartbeat_check_interval=HEARTBEAT_CHECK_INTERVAL,
     ):
-        self.list_key = list_key
-        self.poll_interval = poll_interval
+        self.control_channel = control_channel
         self.start_batch_size = start_batch_size
         self.start_batch_delay = start_batch_delay
         self.reconnect_delay = reconnect_delay
-        self.use_keyspace_notify = use_keyspace_notify
+        self.heartbeat_check_interval = heartbeat_check_interval
 
         self._workers = {}
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
-        self._sync_event = threading.Event()
-        self._stats = {'started': 0, 'stopped': 0, 'sync_count': 0}
+        self._stats = {'started': 0, 'stopped': 0, 'commands': 0}
 
-    def _fetch_target_rooms(self):
-        items = redis_util.redis_util.lrange(self.list_key, 0, -1)
-        target = {}
-        for item in items:
-            parsed = parse_room_entry(item)
-            if parsed:
-                live_id, cookie = parsed
-                target[live_id] = cookie
-        return target
+    def _on_worker_stopped(self, live_id):
+        with self._lock:
+            if live_id not in self._workers:
+                return
+            self._workers.pop(live_id, None)
+            print(f'[manager] 监听线程已结束: {live_id} (当前 {len(self._workers)} 个)')
 
     def _start_room(self, live_id, cookie):
         with self._lock:
-            if live_id in self._workers:
-                return
-            worker = LiveRoomWorker(live_id, cookie, self.reconnect_delay)
+            existing = self._workers.get(live_id)
+            if existing:
+                if existing.cookie == cookie and existing.thread.is_alive():
+                    print(f'[manager] 已在监听: {live_id}')
+                    return
+                worker = self._workers.pop(live_id, None)
+            else:
+                worker = None
+        if worker:
+            worker.stop()
+
+        worker = LiveRoomWorker(
+            live_id,
+            cookie,
+            self.reconnect_delay,
+            heartbeat_key=build_heartbeat_key(live_id),
+            heartbeat_check_interval=self.heartbeat_check_interval,
+            on_stopped=self._on_worker_stopped,
+        )
+        with self._lock:
             self._workers[live_id] = worker
         worker.start()
         self._stats['started'] += 1
-        print(f"[manager] 启动监听: {live_id} (当前 {len(self._workers)} 个)")
+        print(f'[manager] 启动监听: {live_id} (当前 {len(self._workers)} 个)')
 
-    def _stop_room(self, live_id):
+    def _stop_room(self, live_id, reason='command'):
         with self._lock:
             worker = self._workers.pop(live_id, None)
         if not worker:
+            print(f'[manager] 无需停止（未在运行）: {live_id}')
             return
         ok = worker.stop()
         self._stats['stopped'] += 1
         status = '已停止' if ok else '停止超时'
-        print(f"[manager] {status}: {live_id} (当前 {len(self._workers)} 个)")
+        print(f'[manager] {status}({reason}): {live_id} (当前 {len(self._workers)} 个)')
 
-    def sync(self, reason='manual'):
-        try:
-            target = self._fetch_target_rooms()
-        except Exception as e:
-            print(f"[manager] 读取 Redis 列表失败: {e}")
+    def _handle_command(self, raw):
+        parsed = parse_control_command(raw)
+        if not parsed:
             return
-
-        with self._lock:
-            current = dict(self._workers)
-
-        current_ids = set(current.keys())
-        target_ids = set(target.keys())
-
-        to_remove = sorted(current_ids - target_ids)
-        to_add = sorted(target_ids - current_ids)
-        to_update = sorted(
-            live_id for live_id in (current_ids & target_ids)
-            if current[live_id].cookie != target[live_id]
-        )
-
-        if not to_remove and not to_add and not to_update:
+        action, live_id, cookie = parsed
+        self._stats['commands'] += 1
+        if action == 'stop':
+            self._stop_room(live_id, reason='pubsub')
             return
-
-        parts = []
-        if to_add:
-            parts.append(f"+{len(to_add)}")
-        if to_remove:
-            parts.append(f"-{len(to_remove)}")
-        if to_update:
-            parts.append(f"~{len(to_update)}")
-        print(
-            f"[manager] 同步({reason}): {' '.join(parts)} "
-            f"目标={len(target)} 运行中={len(current)}"
-        )
-
-        for live_id in to_remove:
-            self._stop_room(live_id)
-
-        for live_id in to_update:
-            self._stop_room(live_id)
-
-        to_start = [(live_id, target[live_id]) for live_id in sorted(set(to_add) | set(to_update))]
-        if to_start:
-            self._start_rooms_batch(to_start)
-
-        self._stats['sync_count'] += 1
+        self._start_room(live_id, cookie)
 
     def _start_rooms_batch(self, rooms):
         """rooms: [(live_id, cookie), ...]"""
@@ -179,29 +213,24 @@ class LiveRoomManager:
             if i + self.start_batch_size < len(rooms):
                 time.sleep(0.5)
 
-    def _poll_loop(self):
-        while not self._stop_event.is_set():
-            self.sync(reason='poll')
-            self._stop_event.wait(self.poll_interval)
-
-    def _keyspace_loop(self):
-        db = redis_util.REDIS_CONFIG.get('db', 0)
-        pattern = f'__keyspace@{db}__:{self.list_key}'
+    def _command_loop(self):
         pubsub = redis_util.redis_util.create_pubsub()
         try:
-            pubsub.psubscribe(pattern)
-            print(f"[manager] 已订阅 Redis keyspace: {pattern}")
+            pubsub.subscribe(self.control_channel)
+            print(f'[manager] 已订阅控制频道: {self.control_channel}')
         except Exception as e:
-            print(f"[manager] keyspace 订阅失败，仅使用轮询: {e}")
+            print(f'[manager] 控制频道订阅失败: {e}')
             return
 
         while not self._stop_event.is_set():
             try:
                 message = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                if message and message.get('type') in ('pmessage', 'message'):
-                    self._sync_event.set()
+                if message and message.get('type') == 'message':
+                    data = message.get('data')
+                    if data is not None:
+                        self._handle_command(data)
             except Exception as e:
-                print(f"[manager] keyspace 监听异常: {e}")
+                print(f'[manager] 控制频道监听异常: {e}')
                 if self._stop_event.wait(3):
                     break
 
@@ -210,36 +239,23 @@ class LiveRoomManager:
         except Exception:
             pass
 
-    def _sync_dispatcher(self):
-        while not self._stop_event.is_set():
-            triggered = self._sync_event.wait(timeout=1.0)
-            self._sync_event.clear()
-            if triggered:
-                self.sync(reason='keyspace')
-
     def start(self):
-        print(f"[manager] 监听 Redis 列表: {self.list_key}")
+        print(f'[manager] 监听 Redis 控制频道: {self.control_channel}')
         print(
-            f"[manager] 列表项格式: "
-            '{"live_id": "房间号", "cookie": "cookie字符串"}'
+            '[manager] 控制消息格式: '
+            '{"action": "start"|"stop", "live_id": "房间号", "cookie": "..."}'
         )
         print(
-            f"[manager] 轮询间隔={self.poll_interval}s, "
-            f"批量启动={self.start_batch_size}, "
-            f"keyspace={'开' if self.use_keyspace_notify else '关'}"
+            f'[manager] 心跳 Key 前缀={HEARTBEAT_KEY_PREFIX}, '
+            f'检测间隔={self.heartbeat_check_interval}s'
         )
-        self.sync(reason='init')
 
-        threads = [
-            threading.Thread(target=self._poll_loop, name='live-poll', daemon=True),
-            threading.Thread(target=self._sync_dispatcher, name='live-sync', daemon=True),
-        ]
-        if self.use_keyspace_notify:
-            threads.append(
-                threading.Thread(target=self._keyspace_loop, name='live-keyspace', daemon=True)
-            )
-        for t in threads:
-            t.start()
+        command_thread = threading.Thread(
+            target=self._command_loop,
+            name='live-command',
+            daemon=True,
+        )
+        command_thread.start()
 
         try:
             while not self._stop_event.is_set():
@@ -247,23 +263,23 @@ class LiveRoomManager:
                 with self._lock:
                     active = len(self._workers)
                 print(
-                    f"[manager] 心跳: 运行中={active}, "
-                    f"累计启动={self._stats['started']}, "
-                    f"累计停止={self._stats['stopped']}"
+                    f'[manager] 心跳: 运行中={active}, '
+                    f'累计启动={self._stats["started"]}, '
+                    f'累计停止={self._stats["stopped"]}, '
+                    f'命令数={self._stats["commands"]}'
                 )
         except KeyboardInterrupt:
-            print("\n[manager] 收到退出信号")
+            print('\n[manager] 收到退出信号')
         finally:
             self.stop()
 
     def stop(self):
         self._stop_event.set()
-        self._sync_event.set()
         with self._lock:
             live_ids = list(self._workers.keys())
         for live_id in live_ids:
-            self._stop_room(live_id)
-        print("[manager] 已全部停止")
+            self._stop_room(live_id, reason='shutdown')
+        print('[manager] 已全部停止')
 
 
 def run_from_config(config=None):
@@ -271,27 +287,27 @@ def run_from_config(config=None):
     if config is None:
         config = load_config()
 
-    list_key = config.get('redis_list_key', 'dy_live:rooms')
-    poll_interval = float(config.get('poll_interval', 3))
+    control_channel = config.get('redis_control_channel', DEFAULT_CONTROL_CHANNEL)
     start_batch_size = int(config.get('start_batch_size', 20))
     start_batch_delay = float(config.get('start_batch_delay', 0.05))
     reconnect_delay = float(config.get('reconnect_delay', 5))
-    use_keyspace_notify = config.get('use_keyspace_notify', True)
+    heartbeat_check_interval = float(
+        config.get('heartbeat_check_interval', HEARTBEAT_CHECK_INTERVAL)
+    )
 
-    print(f"[manager] 配置文件: {config_path}")
-    print(f"[manager] poll_interval={poll_interval}s")
+    print(f'[manager] 配置文件: {config_path}')
+    print(f'[manager] control_channel={control_channel}')
 
     manager = LiveRoomManager(
-        list_key=list_key,
-        poll_interval=poll_interval,
+        control_channel=control_channel,
         start_batch_size=start_batch_size,
         start_batch_delay=start_batch_delay,
         reconnect_delay=reconnect_delay,
-        use_keyspace_notify=use_keyspace_notify,
+        heartbeat_check_interval=heartbeat_check_interval,
     )
     manager.start()
 
 
 if __name__ == '__main__':
-    print(f"配置文件: {get_config_file()}")
+    print(f'配置文件: {get_config_file()}')
     run_from_config()
