@@ -22,21 +22,36 @@ class DouyinLive:
         self.auth_ = auth_
         self.live_id = live_id
         self.ws = None
+        self._stop_event = threading.Event()
+        self._ping_thread = None
+
+    def stop(self):
+        self._stop_event.set()
+        if self.ws:
+            try:
+                self.ws.close()
+            except Exception:
+                pass
+
+    def is_stopped(self):
+        return self._stop_event.is_set()
 
     def ping(self, ws):
-        while True:
+        while not self._stop_event.is_set():
             frame = Live_pb2.PushFrame()
             frame.payloadType = "hb"
             try:
                 ws.send(frame.SerializeToString(), opcode=0x02)
-                time.sleep(5)
-            except Exception as e:
+            except Exception:
                 ws.close()
+                break
+            if self._stop_event.wait(5):
                 break
 
     def on_open(self, ws):
-        print("\033[32m### opened ###\033[m")
-        threading.Thread(target=self.ping, args=(ws,)).start()
+        print(f"\033[32m### opened [{self.live_id}] ###\033[m")
+        self._ping_thread = threading.Thread(target=self.ping, args=(ws,), daemon=True)
+        self._ping_thread.start()
 
     def on_message(self, ws, message):
         pdid=f"zbjpd_{self.live_id}"
@@ -74,7 +89,7 @@ class DouyinLive:
                         return
                     redis_util.redis_util.set(key_md5,1,60)
                     # print(message.gift.combo)
-                    print(f'\033[1;37;40m[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 送给 \033[1;37;40m{message.toUser.sec_uid} - {message.toUser.nickname}\033[m \033[1;37;41m{message.gift.name}\033[m x {message.totalCount}')
+                    # print(f'\033[1;37;40m[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 送给 \033[1;37;40m{message.toUser.sec_uid} - {message.toUser.nickname}\033[m \033[1;37;41m{message.gift.name}\033[m x {message.totalCount}')
                     redis_util.redis_util.publish(pdid,json.dumps({
                         'type': 'gift',
                         'from_sec_uid': message.user.sec_uid,
@@ -89,7 +104,7 @@ class DouyinLive:
                     message.ParseFromString(item.payload)
                     # 用户等级
                     # print(message.user.badge_image_list[0])
-                    print(f'\033[1;37;40m[消息]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m : \033[4;30;44m{message.content}\033[m')
+                    # print(f'\033[1;37;40m[消息]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m : \033[4;30;44m{message.content}\033[m')
                     redis_util.redis_util.publish(pdid,json.dumps({
                         'type': 'chat',
                         'from_sec_uid': message.user.sec_uid,
@@ -100,7 +115,7 @@ class DouyinLive:
                 elif item.method == "WebcastMemberMessage":
                     message = Live_pb2.MemberMessage()
                     message.ParseFromString(item.payload)
-                    print(f'\033[1;37;40m[进入]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 进入直播间')
+                    # print(f'\033[1;37;40m[进入]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 进入直播间')
                     redis_util.redis_util.publish(pdid,json.dumps({
                         'type': 'enter',
                         'from_sec_uid': message.user.sec_uid,
@@ -109,7 +124,7 @@ class DouyinLive:
                 elif item.method == "WebcastLikeMessage":
                     message = Live_pb2.LikeMessage()
                     message.ParseFromString(item.payload)
-                    print(f'\033[1;37;40m[点赞]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 点赞了 {message.count} 次')
+                    # print(f'\033[1;37;40m[点赞]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 点赞了 {message.count} 次')
                     redis_util.redis_util.publish(pdid,json.dumps({
                         'type': 'like',
                         'from_sec_uid': message.user.sec_uid,
@@ -121,7 +136,7 @@ class DouyinLive:
                     message = Live_pb2.SocialMessage()
                     message.ParseFromString(item.payload)
                     if message.action == 1:
-                        print(f'\033[1;37;40m[关注]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 关注主播')
+                        # print(f'\033[1;37;40m[关注]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 关注主播')
                         redis_util.redis_util.publish(pdid,json.dumps({
                             'type': 'follow',
                             'from_sec_uid': message.user.sec_uid,
@@ -130,7 +145,7 @@ class DouyinLive:
                 elif item.method == "WebcastRoomStatsMessage":
                     message = Live_pb2.RoomStatsMessage()
                     message.ParseFromString(item.payload)
-                    print(f'\033[1;37;40m[房间信息] {message.displayLong}')
+                    # print(f'\033[1;37;40m[房间信息] {message.displayLong}')
                     redis_util.redis_util.publish(pdid,json.dumps({
                         'type': 'room_stats',
                         'display_long': message.displayLong
@@ -147,20 +162,17 @@ class DouyinLive:
         print("### ===error=== ###\033[m")
 
     def on_close(self, ws, close_status_code, close_msg):
-        # 此处判断是否需要重连 判断直播间是否关闭
-        #self.start_ws()
-        print("\033[31m### closed ###")
+        print(f"\033[31m### closed [{self.live_id}] ###")
         print(f"status_code: {close_status_code}, msg: {close_msg}")
         print("### ===closed=== ###\033[m")
 
-    def start_ws(self):
+    def _build_ws(self):
         room_info = DouyinAPI.get_live_info(self.auth_, self.live_id)
         if room_info is None or isinstance(room_info, tuple):
-            print("\033[31m### 获取直播间信息失败 ###\033[m")
-            return
+            print(f"\033[31m### [{self.live_id}] 获取直播间信息失败 ###\033[m")
+            return None
         room_id = room_info['room_id']
         user_id = room_info['user_id']
-        ttwid = room_info['ttwid']
         params = Params()
 
         res = DouyinAPI.get_webcast_detail(self.auth_, str(user_id), room_id, f"https://live.douyin.com/{self.live_id}")
@@ -202,7 +214,7 @@ class DouyinLive:
          .add_param('signature', generate_signature(room_id, user_id))
          )
         wss_url = f"wss://webcast100-ws-web-hl.douyin.com/webcast/im/push/v2/?{urlencode(params.get())}"
-        self.ws = WebSocketApp(
+        return WebSocketApp(
             url=wss_url,
             header={
                 'Pragma': 'no-cache',
@@ -218,11 +230,30 @@ class DouyinLive:
             on_close=self.on_close,
             on_open=self.on_open
         )
-        try:
-            self.ws.run_forever(origin='https://live.douyin.com')
-        except Exception as e:
-            print(str(e))
-            self.ws.close()
+
+    def start_ws(self, reconnect=True, reconnect_delay=5):
+        while not self._stop_event.is_set():
+            self.ws = self._build_ws()
+            if self.ws is None:
+                if not reconnect or self._stop_event.wait(reconnect_delay):
+                    break
+                continue
+            try:
+                self.ws.run_forever(origin='https://live.douyin.com')
+            except Exception as e:
+                print(f"[{self.live_id}] ws error: {e}")
+                if self.ws:
+                    try:
+                        self.ws.close()
+                    except Exception:
+                        pass
+            if self._stop_event.is_set():
+                break
+            if not reconnect:
+                break
+            print(f"[{self.live_id}] {reconnect_delay}s 后重连...")
+            if self._stop_event.wait(reconnect_delay):
+                break
 
 def get_config_file():
     if getattr(sys, 'frozen', None):
@@ -231,6 +262,11 @@ def get_config_file():
         if os.path.exists(config_file):
             return config_file
         return os.path.join(os.getcwd(), 'launcher_config.json')
+    # 与 launcher.py 一致：优先读取项目根目录配置
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    root_config = os.path.join(project_root, 'launcher_config.json')
+    if os.path.exists(root_config):
+        return root_config
     return os.path.join(os.path.dirname(__file__), 'launcher_config.json')
 
 CONFIG_FILE = get_config_file()

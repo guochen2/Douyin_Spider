@@ -18,55 +18,54 @@ def save_config(config):
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
-def on_start(live_id, cookies):
-    live_id = live_id.strip()
-    cookies = cookies.strip()
-    
-    if not live_id:
-        print("\n错误: 请输入房间号")
+def on_start(redis_list_key, poll_interval):
+    redis_list_key = redis_list_key.strip() or 'dy_live:rooms'
+
+    try:
+        poll_interval_val = float(poll_interval)
+        if poll_interval_val <= 0:
+            raise ValueError
+    except ValueError:
+        print("\n错误: 轮询间隔必须是大于 0 的数字")
         input("按回车键退出...")
         return
-    
-    if not cookies:
-        print("\n错误: 请输入cookie")
-        input("按回车键退出...")
-        return
-    
-    config = {
-        'live_id': live_id,
-        'cookies': '',
-        'live_cookies': cookies
-    }
+
+    config = load_config()
+    config.update({
+        'redis_list_key': redis_list_key,
+        'poll_interval': poll_interval_val,
+    })
     save_config(config)
-    
-    server_exe_path = os.path.join(os.path.dirname(__file__), 'server.exe')
-    server_py_path = os.path.join(os.path.dirname(__file__), 'dy_live', 'server.py')
-    
-    if os.path.exists(server_exe_path):
-        cmd_parts = [server_exe_path]
-    elif os.path.exists(server_py_path):
-        cmd_parts = [sys.executable, server_py_path]
+
+    manager_exe_path = os.path.join(os.path.dirname(__file__), 'live_manager.exe')
+    manager_py_path = os.path.join(os.path.dirname(__file__), 'dy_live', 'live_manager.py')
+
+    if os.path.exists(manager_exe_path):
+        cmd_parts = [manager_exe_path]
+    elif os.path.exists(manager_py_path):
+        cmd_parts = [sys.executable, manager_py_path]
     else:
-        print("\n错误: 未找到 server.exe 或 server.py")
+        print("\n错误: 未找到 live_manager.exe 或 live_manager.py")
         input("按回车键退出...")
         return
-    
-    env = os.environ.copy()
-    env['DY_LIVE_COOKIES'] = cookies
-    env['DY_LIVE_ID'] = live_id
-    env['DY_COOKIES'] = ''
-    
+
     startupinfo = None
     if sys.platform == 'win32':
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= 1
         startupinfo.wShowWindow = 1
-    
+
     try:
-        subprocess.Popen(cmd_parts, env=env, startupinfo=startupinfo, 
-                        creationflags=subprocess.CREATE_NEW_CONSOLE,
-                        cwd=os.path.dirname(__file__))
-        print("\n成功: 直播间已启动！")
+        subprocess.Popen(
+            cmd_parts,
+            env=os.environ.copy(),
+            startupinfo=startupinfo,
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+            cwd=os.path.dirname(__file__),
+        )
+        print("\n成功: Redis 监听服务已启动！")
+        print(f"列表 Key: {redis_list_key}")
+        print('列表项格式: {"live_id": "房间号", "cookie": "..."}')
         print("启动器将在 3 秒后关闭...")
         import time
         time.sleep(3)
@@ -77,47 +76,39 @@ def on_start(live_id, cookies):
 
 def main():
     os.system('cls' if sys.platform == 'win32' else 'clear')
-    
+
     config = load_config()
-    
+
     print("╔════════════════════════════════════════╗")
-    print("║           抖音直播启动器 v1.0          ║")
+    print("║     抖音直播 Redis 监听启动器 v2.1     ║")
     print("╚════════════════════════════════════════╝")
     print()
-    
-    default_live_id = config.get('live_id', '')
-    prompt = f"房间号 ({default_live_id}): " if default_live_id else "房间号: "
-    live_id = input(prompt).strip()
-    if not live_id:
-        live_id = default_live_id
-    
-    print()
-    print("请输入 Cookie (输入完成后按 Ctrl+Z 再按回车结束):")
-    print("-" * 50)
-    cookies_lines = []
-    while True:
-        try:
-            line = input()
-            cookies_lines.append(line)
-        except EOFError:
-            break
-    cookies = '\n'.join(cookies_lines)
-    if not cookies.strip():
-        cookies = config.get('cookies', '')
-    
+
+    default_redis_key = config.get('redis_list_key', 'dy_live:rooms')
+    prompt = f"Redis 列表 Key ({default_redis_key}): "
+    redis_list_key = input(prompt).strip()
+    if not redis_list_key:
+        redis_list_key = default_redis_key
+
+    default_poll = str(config.get('poll_interval', 3))
+    poll_interval = input(f"轮询间隔/秒 ({default_poll}): ").strip()
+    if not poll_interval:
+        poll_interval = default_poll
+
     os.system('cls' if sys.platform == 'win32' else 'clear')
-    
+
     print("╔════════════════════════════════════════╗")
     print("║              确认信息                  ║")
     print("╠════════════════════════════════════════╣")
-    print(f"║ 房间号: {live_id[:30]}{'...' if len(live_id) > 30 else ''}")
-    print(f"║ Cookie: {'已设置' if cookies else '未设置'}")
+    print(f"║ Redis Key: {redis_list_key[:28]}{'...' if len(redis_list_key) > 28 else ''}")
+    print(f"║ 轮询间隔: {poll_interval}s")
+    print("║ Cookie: 从 Redis 列表读取              ║")
     print("╚════════════════════════════════════════╝")
     print()
-    
-    confirm = input("确认开播? (Y/N): ").strip().upper()
+
+    confirm = input("确认启动? (Y/N): ").strip().upper()
     if confirm == 'Y':
-        on_start(live_id, cookies)
+        on_start(redis_list_key, poll_interval)
     else:
         print("\n取消操作")
         input("按回车键退出...")

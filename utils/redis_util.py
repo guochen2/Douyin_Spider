@@ -63,6 +63,23 @@ class RedisUtil:
             print(f"Redis DEL 错误: {e}")
             return 0
 
+    def lrange(self, key, start=0, end=-1):
+        try:
+            return self.client.lrange(key, start, end)
+        except RedisError as e:
+            print(f"Redis LRANGE 错误: {e}")
+            return []
+
+    def llen(self, key):
+        try:
+            return self.client.llen(key)
+        except RedisError as e:
+            print(f"Redis LLEN 错误: {e}")
+            return 0
+
+    def create_pubsub(self):
+        return self.client.pubsub()
+
     # ======================
     # 发布订阅
     # ======================
