@@ -18,6 +18,7 @@ DEFAULT_CONTROL_CHANNEL = 'dy_live:control'
 HEARTBEAT_KEY_PREFIX = 'dy_live:heartbeat:'
 HEARTBEAT_CHECK_INTERVAL = 5
 HEARTBEAT_START_GRACE_SECONDS = 15
+SERVER_RUNNING_COUNT_KEY = 'dy_live:server:running_count'
 
 
 def create_live_auth(cookie_str):
@@ -262,6 +263,14 @@ class LiveRoomManager:
                 time.sleep(10)
                 with self._lock:
                     active = len(self._workers)
+                try:
+                    redis_util.redis_util.set(
+                        SERVER_RUNNING_COUNT_KEY,
+                        str(active),
+                        ex=30,
+                    )
+                except Exception as e:
+                    print(f'[manager] 写入服务端运行数失败: {e}')
                 print(
                     f'[manager] 心跳: 运行中={active}, '
                     f'累计启动={self._stats["started"]}, '
@@ -279,6 +288,10 @@ class LiveRoomManager:
             live_ids = list(self._workers.keys())
         for live_id in live_ids:
             self._stop_room(live_id, reason='shutdown')
+        try:
+            redis_util.redis_util.set(SERVER_RUNNING_COUNT_KEY, '0', ex=30)
+        except Exception:
+            pass
         print('[manager] 已全部停止')
 
 
