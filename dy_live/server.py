@@ -6,6 +6,7 @@ import gzip
 import json
 import threading
 import time
+from collections import deque
 from urllib.parse import urlencode
 
 from google.protobuf.message import DecodeError
@@ -34,6 +35,9 @@ class DouyinLive:
         self._live_page_url = ''
         self._live_aborted = False
         self._last_room_check_at = 0.0
+        self._ws_connected = False
+        self._seen_msg_keys = set()
+        self._seen_msg_order = deque(maxlen=5000)
 
     LIVE_ROOM_STATUSES = {'2'}
     ROOM_CHECK_INTERVAL = 15.0
@@ -41,6 +45,7 @@ class DouyinLive:
 
     def stop(self):
         self._stop_event.set()
+        self._ws_connected = False
         if self.ws:
             try:
                 self.ws.close()
@@ -125,6 +130,20 @@ class DouyinLive:
         ack.logId = log_id
         ws.send(ack.SerializeToString(), opcode=0x02)
 
+    def _should_dispatch_item(self, item):
+        msg_id = getattr(item, 'msgId', 0) or 0
+        if not msg_id:
+            return True
+        key = (item.method, msg_id)
+        if key in self._seen_msg_keys:
+            return False
+        self._seen_msg_keys.add(key)
+        self._seen_msg_order.append(key)
+        while len(self._seen_msg_order) > 5000:
+            old = self._seen_msg_order.popleft()
+            self._seen_msg_keys.discard(old)
+        return True
+
     def _dispatch_message(self, item):
         pdid = self._channel()
         if item.method == 'WebcastGiftMessage':
@@ -135,7 +154,7 @@ class DouyinLive:
             #     f'送给 {message.toUser.nickname} \033[1;37;41m{message.gift.name}\033[m x {message.totalCount}'
             # )
             key_md5 = f'mc:{pdid}_{message.traceId}'
-            if redis_util.redis_util.exists(key_md5):
+            if redis_util.redis_util.exists(key_md5) is True:
                 return
             redis_util.redis_util.set(key_md5, 1, 60)
             redis_util.redis_util.publish(pdid, json.dumps({
@@ -208,6 +227,8 @@ class DouyinLive:
         if not response.messagesList:
             return 0
         for item in response.messagesList:
+            if not self._should_dispatch_item(item):
+                continue
             try:
                 self._dispatch_message(item)
             except Exception as e:
@@ -238,6 +259,11 @@ class DouyinLive:
         while not self._stop_event.is_set():
             if not self._check_room_live_status():
                 break
+            # WebSocket 已连接时由 on_message 推送，避免与 im/fetch 重复
+            if self._ws_connected:
+                if self._stop_event.wait(1.0):
+                    break
+                continue
             try:
                 result = self._fetch_im_messages()
                 if self._live_aborted:
@@ -266,15 +292,22 @@ class DouyinLive:
             if self._stop_event.wait(5):
                 break
 
-    def on_open(self, ws):
-        if self._live_aborted:
-            ws.close()
+    def publish_listening(self):
+        """向客户端频道重新发送 listening 确认（用于重连时服务端已在监听）。"""
+        if self._live_aborted or self.is_stopped():
             return
-        print(f'\033[32m### opened [{self.live_id}] ###\033[m')
         redis_util.redis_util.publish(self._channel(), json.dumps({
             'type': 'listening',
             'live_id': self.live_id,
         }, ensure_ascii=False))
+
+    def on_open(self, ws):
+        if self._live_aborted:
+            ws.close()
+            return
+        self._ws_connected = True
+        print(f'\033[32m### opened [{self.live_id}] ###\033[m')
+        self.publish_listening()
         self._ping_thread = threading.Thread(target=self.ping, args=(ws,), name=f'ping-{self.live_id}', daemon=True)
         self._ping_thread.start()
 
@@ -297,6 +330,7 @@ class DouyinLive:
         print('### ===error=== ###\033[m')
 
     def on_close(self, ws, close_status_code, close_msg):
+        self._ws_connected = False
         print(f'\033[31m### closed [{self.live_id}] ###')
         print(f'status_code: {close_status_code}, msg: {close_msg}')
         print('### ===closed=== ###\033[m')
@@ -373,6 +407,7 @@ class DouyinLive:
                 f'[{self.live_id}] 初始 im/fetch: messages={bootstrap_count}, '
                 f'cursor={self._cursor[:48] if self._cursor else "-"}'
             )
+            self.publish_listening()
         except Exception as e:
             self._fail_cookie_error(f'启动监听失败: {e}')
             return None

@@ -10,7 +10,10 @@ REDIS_CONFIG = {
     "db": 2,
     "password": 'bsUb8C2BrdkEHs6C637E4EENSuQ5e8',  # 有密码就填
     "decode_responses": True,  # 自动返回字符串，不用 decode
-    "socket_timeout": 5,
+    "socket_timeout": 10,
+    "socket_connect_timeout": 5,
+    "retry_on_timeout": True,
+    "health_check_interval": 30,
 }
 
 # ======================
@@ -40,13 +43,13 @@ class RedisUtil:
             return None
         
     def exists(self, key):
-        """判断 Redis 中是否存在某个 key"""
+        """判断 Redis 中是否存在某个 key。出错时返回 None，避免误判为不存在。"""
         try:
             # exists 返回 1=存在 0=不存在
             return self.client.exists(key) == 1
         except RedisError as e:
             print(f"Redis EXISTS 错误: {e}")
-            return False
+            return None
         
 
     def set(self, key, value, ex=None):

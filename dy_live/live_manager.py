@@ -18,6 +18,7 @@ DEFAULT_CONTROL_CHANNEL = 'dy_live:control'
 HEARTBEAT_KEY_PREFIX = 'dy_live:heartbeat:'
 HEARTBEAT_CHECK_INTERVAL = 5
 HEARTBEAT_START_GRACE_SECONDS = 15
+HEARTBEAT_MISS_THRESHOLD = 3
 SERVER_RUNNING_COUNT_KEY = 'dy_live:server:running_count'
 
 
@@ -88,12 +89,29 @@ class LiveRoomWorker:
 
     def _heartbeat_loop(self):
         grace_until = time.time() + HEARTBEAT_START_GRACE_SECONDS
+        miss_count = 0
         while not self.live.is_stopped():
             if time.time() >= grace_until:
-                if self.heartbeat_key and not redis_util.redis_util.exists(self.heartbeat_key):
-                    print(f'[manager] 心跳过期，主动关闭监听: {self.live_id}')
-                    self.live.stop()
-                    break
+                if self.heartbeat_key:
+                    key_exists = redis_util.redis_util.exists(self.heartbeat_key)
+                    if key_exists is None:
+                        print(f'[manager] 心跳检测 Redis 异常，跳过本次: {self.live_id}')
+                    elif key_exists:
+                        miss_count = 0
+                    else:
+                        miss_count += 1
+                        print(
+                            f'[manager] 心跳 Key 未找到 ({miss_count}/{HEARTBEAT_MISS_THRESHOLD}): '
+                            f'{self.live_id}'
+                        )
+                        if miss_count >= HEARTBEAT_MISS_THRESHOLD:
+                            print(f'[manager] 心跳过期，主动关闭监听: {self.live_id}')
+                            try:
+                                self.live._publish_live_error('客户端心跳断开，监听已停止')
+                            except Exception:
+                                pass
+                            self.live.stop()
+                            break
             if self.live._stop_event.wait(self.heartbeat_check_interval):
                 break
 
@@ -114,7 +132,7 @@ class LiveRoomWorker:
                 self.live._fail_cookie_error(f'监听线程异常: {e}')
         finally:
             if self.on_stopped:
-                self.on_stopped(self.live_id)
+                self.on_stopped(self.live_id, self)
 
     def start(self):
         self.thread.start()
@@ -145,25 +163,49 @@ class LiveRoomManager:
         self._stop_event = threading.Event()
         self._stats = {'started': 0, 'stopped': 0, 'commands': 0}
 
-    def _on_worker_stopped(self, live_id):
+    def _on_worker_stopped(self, live_id, worker):
         with self._lock:
-            if live_id not in self._workers:
+            current = self._workers.get(live_id)
+            if current is not worker:
                 return
             self._workers.pop(live_id, None)
             print(f'[manager] 监听线程已结束: {live_id} (当前 {len(self._workers)} 个)')
 
+    def _finalize_worker_stop(self, worker, live_id, reason):
+        ok = worker.stop()
+        self._stats['stopped'] += 1
+        status = '已停止' if ok else '停止超时'
+        with self._lock:
+            active = len(self._workers)
+        print(f'[manager] {status}({reason}): {live_id} (当前 {active} 个)')
+
+    def _stop_room(self, live_id, reason='command', wait=False):
+        with self._lock:
+            worker = self._workers.pop(live_id, None)
+        if not worker:
+            print(f'[manager] 无需停止（未在运行）: {live_id}')
+            return
+        worker.live.stop()
+        if wait:
+            self._finalize_worker_stop(worker, live_id, reason)
+            return
+        threading.Thread(
+            target=self._finalize_worker_stop,
+            args=(worker, live_id, reason),
+            name=f'stop-{live_id}',
+            daemon=True,
+        ).start()
+
     def _start_room(self, live_id, cookie):
         with self._lock:
-            existing = self._workers.get(live_id)
-            if existing:
-                if existing.cookie == cookie and existing.thread.is_alive():
-                    print(f'[manager] 已在监听: {live_id}')
-                    return
-                worker = self._workers.pop(live_id, None)
-            else:
-                worker = None
-        if worker:
-            worker.stop()
+            old_worker = self._workers.pop(live_id, None)
+        if old_worker:
+            old_worker.live.stop()
+            threading.Thread(
+                target=old_worker.stop,
+                name=f'stop-before-start-{live_id}',
+                daemon=True,
+            ).start()
 
         worker = LiveRoomWorker(
             live_id,
@@ -179,16 +221,17 @@ class LiveRoomManager:
         self._stats['started'] += 1
         print(f'[manager] 启动监听: {live_id} (当前 {len(self._workers)} 个)')
 
-    def _stop_room(self, live_id, reason='command'):
-        with self._lock:
-            worker = self._workers.pop(live_id, None)
-        if not worker:
-            print(f'[manager] 无需停止（未在运行）: {live_id}')
-            return
-        ok = worker.stop()
-        self._stats['stopped'] += 1
-        status = '已停止' if ok else '停止超时'
-        print(f'[manager] {status}({reason}): {live_id} (当前 {len(self._workers)} 个)')
+    def _publish_room_event(self, live_id, event_type, message=None):
+        payload = {'type': event_type, 'live_id': live_id}
+        if message is not None:
+            payload['message'] = message
+        try:
+            redis_util.redis_util.publish(
+                f'zbjpd_{live_id}',
+                json.dumps(payload, ensure_ascii=False),
+            )
+        except Exception as e:
+            print(f'[manager] 发布 {event_type} 失败: live_id={live_id}, err={e}')
 
     def _handle_command(self, raw):
         parsed = parse_control_command(raw)
@@ -196,9 +239,11 @@ class LiveRoomManager:
             return
         action, live_id, cookie = parsed
         self._stats['commands'] += 1
+        print(f'[manager] 收到控制命令: action={action}, live_id={live_id}')
         if action == 'stop':
             self._stop_room(live_id, reason='pubsub')
             return
+        self._publish_room_event(live_id, 'starting')
         self._start_room(live_id, cookie)
 
     def _start_rooms_batch(self, rooms):
@@ -287,7 +332,7 @@ class LiveRoomManager:
         with self._lock:
             live_ids = list(self._workers.keys())
         for live_id in live_ids:
-            self._stop_room(live_id, reason='shutdown')
+            self._stop_room(live_id, reason='shutdown', wait=True)
         try:
             redis_util.redis_util.set(SERVER_RUNNING_COUNT_KEY, '0', ex=30)
         except Exception:
