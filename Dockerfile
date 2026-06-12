@@ -1,29 +1,31 @@
-FROM python:3.10-slim
+FROM python:3.10.20-slim
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONIOENCODING=utf-8 \
+    PYTHONUTF8=1 \
+    NODE_ENV=production
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    ca-certificates \
     gnupg \
-    build-essential \
-    git \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python --version && node --version && npm --version
+RUN python --version && node --version
 
-COPY requirements.txt .
+COPY requirements-docker.txt .
+RUN pip install --no-cache-dir -r requirements-docker.txt
 
-RUN pip install --no-cache-dir -r requirements.txt
+# 直播间监听仅需 jsrsasign，避免 sdenv/canvas 等原生模块编译失败
+COPY package-docker.json package.json
+RUN npm install --omit=dev && npm cache clean --force
 
 COPY . .
 
-EXPOSE 5000
-
-ENV PYTHONUNBUFFERED=1
-ENV NODE_ENV=production
-
-CMD ["python", "main.py"] 
+CMD ["python", "launcher.py"]

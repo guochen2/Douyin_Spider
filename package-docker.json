@@ -1,0 +1,7 @@
+{
+  "name": "douyin-spider-docker",
+  "private": true,
+  "dependencies": {
+    "jsrsasign": "^11.1.0"
+  }
+}

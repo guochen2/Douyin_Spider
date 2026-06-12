@@ -1,0 +1,14 @@
+services:
+  douyin-spider:
+    build: .
+    image: douyin-spider:latest
+    container_name: douyin-spider
+    restart: unless-stopped
+    command: python launcher.py
+    environment:
+      REDIS_HOST: ${REDIS_HOST:-39.98.176.249}
+      REDIS_PORT: ${REDIS_PORT:-3521}
+      REDIS_DB: ${REDIS_DB:-2}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-bsUb8C2BrdkEHs6C637E4EENSuQ5e8}
+    volumes:
+      - ./launcher_config.json:/app/launcher_config.json

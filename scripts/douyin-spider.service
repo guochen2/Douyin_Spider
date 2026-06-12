@@ -1,0 +1,21 @@
+[Unit]
+Description=Douyin Live Redis Listener
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/douyin-spider
+Environment=PYTHONIOENCODING=utf-8
+Environment=PYTHONUTF8=1
+Environment=RUN_IN_FOREGROUND=1
+Environment=REDIS_HOST=127.0.0.1
+Environment=REDIS_PORT=6379
+Environment=REDIS_DB=2
+Environment=REDIS_PASSWORD=
+ExecStart=/opt/douyin-spider/.venv/bin/python launcher.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

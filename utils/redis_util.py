@@ -1,20 +1,26 @@
+import os
+
 import redis
 from redis.exceptions import RedisError
 
-# ======================
-# 全局配置（改这里即可）
-# ======================
-REDIS_CONFIG = {
-    "host": "39.98.176.249",
-    "port": 3521,
-    "db": 2,
-    "password": 'bsUb8C2BrdkEHs6C637E4EENSuQ5e8',  # 有密码就填
-    "decode_responses": True,  # 自动返回字符串，不用 decode
-    "socket_timeout": 10,
-    "socket_connect_timeout": 5,
-    "retry_on_timeout": True,
-    "health_check_interval": 30,
-}
+
+def _load_redis_config():
+    port = os.getenv('REDIS_PORT', '3521')
+    db = os.getenv('REDIS_DB', '2')
+    return {
+        'host': os.getenv('REDIS_HOST', '39.98.176.249'),
+        'port': int(port),
+        'db': int(db),
+        'password': os.getenv('REDIS_PASSWORD', 'bsUb8C2BrdkEHs6C637E4EENSuQ5e8') or None,
+        'decode_responses': True,
+        'socket_timeout': 10,
+        'socket_connect_timeout': 5,
+        'retry_on_timeout': True,
+        'health_check_interval': 30,
+    }
+
+
+REDIS_CONFIG = _load_redis_config()
 
 # ======================
 # 单例 Redis 客户端

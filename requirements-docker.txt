@@ -1,0 +1,8 @@
+redis==4.5.5
+websocket-client==1.9.0
+protobuf==6.33.6
+requests==2.33.1
+beautifulsoup4==4.14.3
+protobuf3-to-dict==0.1.5
+python-dotenv==1.0.1
+PyExecJS==1.5.1
