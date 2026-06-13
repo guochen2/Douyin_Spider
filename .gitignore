@@ -30,8 +30,11 @@ env.bak/
 venv.bak/
 datas
 tools/redis/
+tools/mingw64/
+build/mingw_extract/
 build/obf/
 build/pyinstaller/
+build/nuitka/
 redis-data/
 packaging/*.spec
 !packaging/launcher-windows.spec

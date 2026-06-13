@@ -4,13 +4,13 @@ import traceback
 
 
 def app_dir():
-    if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    from utils.pack_env import app_dir as _app_dir
+    return _app_dir()
 
 
 def setup_runtime_paths():
-    if not getattr(sys, 'frozen', False):
+    from utils.pack_env import is_packaged
+    if not (is_packaged() or getattr(sys, 'frozen', False)):
         return
     base = app_dir()
     node_dir = os.path.join(base, 'tools', 'node')
@@ -29,6 +29,7 @@ def write_crash_log(text):
 
 
 def show_fatal_error(exc):
+    from utils.pack_env import is_packaged
     text = ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     log_path = write_crash_log(text)
 
@@ -45,7 +46,10 @@ def show_fatal_error(exc):
     except Exception:
         pass
 
-    if getattr(sys, 'frozen', False):
+    from utils.pack_env import is_packaged
+    if is_packaged() or getattr(sys, 'frozen', False):
+        if os.getenv('DOUYIN_LIVE_GUI', '').lower() in ('1', 'true', 'yes'):
+            return
         try:
             input('\n按回车键退出...')
         except Exception:

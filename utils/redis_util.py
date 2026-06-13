@@ -7,7 +7,7 @@ from redis.exceptions import RedisError
 def _load_redis_config():
     embedded = os.getenv('EMBEDDED_REDIS', '').lower() not in ('0', 'false', 'no', 'off', 'external')
     default_host = '127.0.0.1' if embedded or os.path.exists('/.dockerenv') else '39.98.176.249'
-    default_port = '6379' if embedded or os.path.exists('/.dockerenv') else '3521'
+    default_port = '16380' if embedded else ('6379' if os.path.exists('/.dockerenv') else '3521')
     default_db = '0' if embedded or os.path.exists('/.dockerenv') else '2'
     default_password = 'douyin_local_redis' if embedded else 'bsUb8C2BrdkEHs6C637E4EENSuQ5e8'
 

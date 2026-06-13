@@ -15,48 +15,51 @@ echo.
 
 REM -------- Python 环境（优先 conda np310 / p310，否则当前 python）--------
 set PYTHON_EXE=
-if exist "D:\ProgramData\anaconda3\envs\np310\python.exe" set PYTHON_EXE=D:\ProgramData\anaconda3\envs\np310\python.exe
-if exist "D:\ProgramData\anaconda3\envs\p310\python.exe" set PYTHON_EXE=D:\ProgramData\anaconda3\envs\p310\python.exe
-if exist "D:\Conda\envs\np310\python.exe" set PYTHON_EXE=D:\Conda\envs\np310\python.exe
-if exist "D:\Conda\envs\p310\python.exe" set PYTHON_EXE=D:\Conda\envs\p310\python.exe
-if "%PYTHON_EXE%"=="" (
-    for /f "delims=" %%i in ('where python 2^>nul') do (
-        set PYTHON_EXE=%%i
+if exist "C:\Users\PC\.conda\envs\p310\python.exe" set "PYTHON_EXE=C:\Users\PC\.conda\envs\p310\python.exe"
+if exist "C:\Users\PC\.conda\envs\np310\python.exe" set "PYTHON_EXE=C:\Users\PC\.conda\envs\np310\python.exe"
+if exist "D:\ProgramData\anaconda3\envs\np310\python.exe" set "PYTHON_EXE=D:\ProgramData\anaconda3\envs\np310\python.exe"
+if exist "D:\ProgramData\anaconda3\envs\p310\python.exe" set "PYTHON_EXE=D:\ProgramData\anaconda3\envs\p310\python.exe"
+if exist "D:\Conda\envs\np310\python.exe" set "PYTHON_EXE=D:\Conda\envs\np310\python.exe"
+if exist "D:\Conda\envs\p310\python.exe" set "PYTHON_EXE=D:\Conda\envs\p310\python.exe"
+if not defined PYTHON_EXE (
+    for /f "usebackq delims=" %%i in (`where python 2^>nul`) do (
+        set "PYTHON_EXE=%%~i"
         goto :py_found
     )
 )
 :py_found
-if "%PYTHON_EXE%"=="" (
+if not defined PYTHON_EXE (
     echo 错误: 未找到 Python，请安装 Python 3.10 或配置 conda 环境 np310
     pause
     exit /b 1
 )
 echo 使用 Python: %PYTHON_EXE%
 "%PYTHON_EXE%" -c "import sys; assert sys.version_info>=(3,10), f'需要 Python 3.10+，当前 {sys.version}'"
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo 错误: 打包需要 Python 3.10 及以上
     pause
     exit /b 1
 )
 
-set PYDIR=%PYTHON_EXE:\python.exe=%
-set PATH=%PYDIR%;%PYDIR%\Scripts;%PYDIR%\Library\bin;%PATH%
+for %%F in ("%PYTHON_EXE%") do set "PYDIR=%%~dpF"
+set "PYDIR=%PYDIR:~0,-1%"
+set "PATH=%PYDIR%;%PYDIR%\Scripts;%PYDIR%\Library\bin;%PATH%"
 
 echo.
 echo [1/7] 安装打包依赖 ...
-"%PYDIR%\Scripts\python.exe" -m pip install --upgrade pip
-"%PYDIR%\Scripts\pip.exe" install -r requirements-docker.txt pyinstaller pyarmor
-if %errorlevel% neq 0 (
+"%PYTHON_EXE%" -m pip install --upgrade pip
+"%PYTHON_EXE%" -m pip install -r requirements-docker.txt pyinstaller pyarmor
+if errorlevel 1 (
     echo 尝试使用清华镜像源 ...
-    "%PYDIR%\Scripts\pip.exe" install -r requirements-docker.txt pyinstaller pyarmor -i https://pypi.tuna.tsinghua.edu.cn/simple
+    "%PYTHON_EXE%" -m pip install -r requirements-docker.txt pyinstaller pyarmor -i https://pypi.tuna.tsinghua.edu.cn/simple
 )
-if %errorlevel% neq 0 goto :fail
+if errorlevel 1 goto :fail
 
 echo 对齐 requests 依赖版本 ...
-"%PYDIR%\Scripts\pip.exe" uninstall -y chardet 2>nul
-"%PYDIR%\Scripts\pip.exe" install --force-reinstall requests==2.32.3 urllib3==2.2.3 charset-normalizer==3.4.1
-if %errorlevel% neq 0 (
-    "%PYDIR%\Scripts\pip.exe" install --force-reinstall requests==2.32.3 urllib3==2.2.3 charset-normalizer==3.4.1 -i https://pypi.tuna.tsinghua.edu.cn/simple
+"%PYTHON_EXE%" -m pip uninstall -y chardet 2>nul
+"%PYTHON_EXE%" -m pip install --force-reinstall requests==2.32.3 urllib3==2.2.3 charset-normalizer==3.4.1
+if errorlevel 1 (
+    "%PYTHON_EXE%" -m pip install --force-reinstall requests==2.32.3 urllib3==2.2.3 charset-normalizer==3.4.1 -i https://pypi.tuna.tsinghua.edu.cn/simple
 )
 
 echo.
@@ -148,7 +151,7 @@ copy /Y config\redis.conf "%OUT%\config\" >nul
 copy /Y packaging\start.bat "%OUT%\start.bat" >nul
 copy /Y scripts\stop-services.bat "%OUT%\stop.bat" >nul
 if not exist "%OUT%\launcher_config.json" (
-    echo {"embedded_redis": true, "redis_port": 6379, "redis_password": "douyin_local_redis", "redis_control_channel": "dy_live:control"}> "%OUT%\launcher_config.json"
+    echo {"embedded_redis": true, "redis_port": 16380, "redis_control_channel": "dy_live:control"}> "%OUT%\launcher_config.json"
 ) else (
     copy /Y launcher_config.json "%OUT%\launcher_config.json" >nul
 )
@@ -160,8 +163,8 @@ echo 启动: 双击 start.bat 或 DouyinLive.exe
 echo 停止: 双击 stop.bat（重新打包前请先停止）
 echo.
 echo 内置 Redis 默认:
-echo   地址: 127.0.0.1:6379
-echo   密码: douyin_local_redis
+echo   地址: 127.0.0.1:16380
+echo   密码: 首次启动自动生成 12 位，可在窗体中修改
 echo   控制频道: dy_live:control
 echo.
 echo 使用外部 Redis 时，设置环境变量 REDIS_HOST 或在 launcher_config.json 中设置:

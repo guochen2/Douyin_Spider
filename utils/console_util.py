@@ -93,6 +93,11 @@ def setup_console_utf8():
         return
 
     frozen = getattr(sys, 'frozen', False)
+    try:
+        from utils.pack_env import is_packaged
+        frozen = frozen or is_packaged()
+    except Exception:
+        pass
     if frozen:
         _set_console_codepage(936)
         _patch_print_winconsole()

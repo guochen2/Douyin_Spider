@@ -41,9 +41,8 @@ _sign_js = None
 
 
 def _resource_base():
-    if getattr(sys, 'frozen', False):
-        return sys._MEIPASS
-    return path.dirname(path.dirname(path.abspath(__file__)))
+    from utils.pack_env import resource_dir
+    return resource_dir()
 
 
 def _compile_js(relative_js, cwd_name='node_modules'):

@@ -4,6 +4,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -11,12 +12,17 @@ _redis_process = None
 _temp_conf_path = None
 _we_started_redis = False
 _redis_endpoint = None
+_redis_stopped = False
+_stop_lock = threading.Lock()
+
+DEFAULT_EMBEDDED_REDIS_PORT = 16380
+DEFAULT_EMBEDDED_REDIS_PASSWORD = 'douyin_local_redis'
+FALLBACK_REDIS_PORTS = (16380, 16381, 6380, 6381, 16379)
 
 
 def app_dir():
-    if getattr(sys, 'frozen', False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent.parent
+    from utils.pack_env import app_dir as _app_dir
+    return Path(_app_dir())
 
 
 def find_redis_tool(name):
@@ -38,6 +44,49 @@ def is_port_open(host, port, timeout=0.5):
             return True
     except OSError:
         return False
+
+
+def probe_redis(host, port, password, timeout=2):
+    """
+    探测端口上的 Redis 是否可用、是否需要密码。
+    返回: ok_with_password | ok_no_password | foreign_no_password | auth_mismatch | closed | error
+    """
+    if not is_port_open(host, port, timeout=timeout):
+        return 'closed'
+
+    try:
+        import redis
+        from redis.exceptions import AuthenticationError, RedisError
+
+        client = redis.Redis(
+            host=host,
+            port=int(port),
+            password=password or None,
+            db=0,
+            socket_connect_timeout=timeout,
+            socket_timeout=timeout,
+        )
+        client.ping()
+        return 'ok_with_password' if password else 'ok_no_password'
+    except AuthenticationError as exc:
+        msg = str(exc).lower()
+        if password and 'no password is set' in msg:
+            try:
+                client = redis.Redis(
+                    host=host,
+                    port=int(port),
+                    password=None,
+                    db=0,
+                    socket_connect_timeout=timeout,
+                    socket_timeout=timeout,
+                )
+                client.ping()
+                return 'foreign_no_password'
+            except RedisError:
+                return 'error'
+        return 'auth_mismatch'
+    except Exception:
+        return 'error'
 
 
 def should_start_embedded_redis(config=None):
@@ -75,8 +124,12 @@ def _graceful_shutdown(host, port, password):
         kwargs = {}
         if sys.platform == 'win32':
             kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+        cmd = [str(cli), '-h', host, '-p', str(port)]
+        if password:
+            cmd.extend(['-a', password])
+        cmd.append('shutdown')
         result = subprocess.run(
-            [str(cli), '-h', host, '-p', str(port), '-a', password, 'shutdown'],
+            cmd,
             capture_output=True,
             timeout=8,
             **kwargs,
@@ -109,22 +162,73 @@ def _write_redis_conf(port, password, data_dir):
     return path
 
 
+def _resolve_embedded_port(host, preferred_port, password):
+    """选择可复用或可用于启动内置 Redis 的端口。"""
+    status = probe_redis(host, preferred_port, password)
+    if status == 'ok_with_password':
+        print(f'[redis] 复用已有 Redis（密码匹配）: {host}:{preferred_port}')
+        return preferred_port, False
+
+    if status == 'closed':
+        return preferred_port, True
+
+    if status in ('foreign_no_password', 'auth_mismatch', 'error'):
+        print(
+            f'[redis] 端口 {preferred_port} 已被其他 Redis 占用'
+            f'（{"无密码" if status == "foreign_no_password" else "密码不匹配或不可连接"}），'
+            f'将尝试其他端口启动内置 Redis'
+        )
+
+    candidates = []
+    for port in (preferred_port, *FALLBACK_REDIS_PORTS):
+        if port not in candidates:
+            candidates.append(port)
+
+    for port in candidates:
+        if port == preferred_port and status not in ('foreign_no_password', 'auth_mismatch', 'error'):
+            continue
+        port_status = probe_redis(host, port, password)
+        if port_status == 'ok_with_password':
+            print(f'[redis] 复用已有 Redis（密码匹配）: {host}:{port}')
+            return port, False
+        if port_status == 'closed':
+            return port, True
+
+    return None, False
+
+
+def _apply_redis_env(host, port, password, db):
+    os.environ['REDIS_HOST'] = host
+    os.environ['REDIS_PORT'] = str(port)
+    os.environ['REDIS_PASSWORD'] = password
+    os.environ['REDIS_DB'] = str(db)
+
+
 def start_embedded_redis(config=None):
-    global _redis_process, _we_started_redis, _redis_endpoint
+    global _redis_process, _we_started_redis, _redis_endpoint, _redis_stopped
     config = config or {}
+    _redis_stopped = False
+
+    from utils.redis_config import ensure_redis_password
 
     host = '127.0.0.1'
-    port = int(config.get('redis_port') or os.getenv('REDIS_PORT') or 6379)
-    password = str(config.get('redis_password') or os.getenv('REDIS_PASSWORD') or 'douyin_local_redis')
+    preferred_port = int(
+        config.get('redis_port')
+        or os.getenv('REDIS_PORT')
+        or DEFAULT_EMBEDDED_REDIS_PORT
+    )
+    password = str(ensure_redis_password(config))
+    db = config.get('redis_db', os.getenv('REDIS_DB', '0'))
 
-    os.environ.setdefault('REDIS_HOST', host)
-    os.environ.setdefault('REDIS_PORT', str(port))
-    os.environ.setdefault('REDIS_PASSWORD', password)
-    os.environ.setdefault('REDIS_DB', str(config.get('redis_db', os.getenv('REDIS_DB', '0'))))
+    port, should_start = _resolve_embedded_port(host, preferred_port, password)
+    if port is None:
+        print('[redis] 未找到可用端口启动内置 Redis，请关闭占用 Redis 或修改 launcher_config.json 中的 redis_port')
+        return False
+
+    _apply_redis_env(host, port, password, db)
     _redis_endpoint = (host, port, password)
 
-    if is_port_open(host, port):
-        print(f'[redis] 检测到本地 Redis 已运行: {host}:{port}')
+    if not should_start:
         _we_started_redis = False
         return True
 
@@ -146,7 +250,7 @@ def start_embedded_redis(config=None):
     _we_started_redis = True
 
     for _ in range(50):
-        if is_port_open(host, port):
+        if probe_redis(host, port, password) == 'ok_with_password':
             print('[redis] 内置 Redis 已就绪')
             return True
         if _redis_process.poll() is not None:
@@ -162,34 +266,51 @@ def start_embedded_redis(config=None):
 
 
 def stop_embedded_redis():
-    global _redis_process, _temp_conf_path, _we_started_redis, _redis_endpoint
+    global _redis_process, _temp_conf_path, _we_started_redis, _redis_endpoint, _redis_stopped
 
-    if _we_started_redis and _redis_endpoint:
-        host, port, password = _redis_endpoint
+    with _stop_lock:
+        if _redis_stopped:
+            return
+
+        proc = _redis_process
+        endpoint = _redis_endpoint
+        started = _we_started_redis
+        conf_path = _temp_conf_path
+
+        _redis_process = None
+        _redis_endpoint = None
+        _we_started_redis = False
+        _temp_conf_path = None
+        _redis_stopped = True
+
+    if started and endpoint:
+        host, port, password = endpoint
         if _graceful_shutdown(host, port, password):
             time.sleep(0.5)
 
-    if _redis_process and _redis_process.poll() is None:
-        _redis_process.terminate()
+    if proc is not None and proc.poll() is None:
+        proc.terminate()
         try:
-            _redis_process.wait(timeout=5)
+            proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            _redis_process.kill()
-            try:
-                _redis_process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                pass
+            if proc.poll() is None:
+                proc.kill()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    pass
 
-    _redis_process = None
-    _we_started_redis = False
-    _redis_endpoint = None
-
-    if _temp_conf_path and os.path.exists(_temp_conf_path):
+    if conf_path and os.path.exists(conf_path):
         try:
-            os.remove(_temp_conf_path)
+            os.remove(conf_path)
         except OSError:
             pass
-        _temp_conf_path = None
+
+    try:
+        import utils.redis_util as redis_util_module
+        redis_util_module.redis_util.reset()
+    except Exception:
+        pass
 
 
 atexit.register(stop_embedded_redis)

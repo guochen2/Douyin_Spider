@@ -3,19 +3,31 @@ import warnings
 
 warnings.filterwarnings('ignore', message='.*doesn\'t match a supported version.*')
 
-from utils.console_util import setup_console_utf8
-
-setup_console_utf8()
-
 import os
 import subprocess
 import json
 
+DEFAULT_REDIS_PORT = 16380
+
+
+def should_use_gui():
+    if sys.platform != 'win32':
+        return False
+    if '--cli' in sys.argv or '--console' in sys.argv:
+        return False
+    if os.getenv('DOUYIN_LIVE_CLI', '').lower() in ('1', 'true', 'yes'):
+        return False
+    return True
+
+
+if not should_use_gui():
+    from utils.console_util import setup_console_utf8
+    setup_console_utf8()
+
 
 def _app_dir():
-    if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
+    from utils.pack_env import app_dir
+    return app_dir()
 
 
 CONFIG_FILE = os.path.join(_app_dir(), 'launcher_config.json')
@@ -49,7 +61,10 @@ def _ensure_embedded_redis(config):
 
 
 def _pause_on_error():
-    if getattr(sys, 'frozen', False):
+    from utils.pack_env import is_packaged
+    if is_packaged() or getattr(sys, 'frozen', False):
+        if should_use_gui():
+            return
         try:
             input('\n按回车键退出...')
         except Exception:
@@ -75,11 +90,23 @@ def start_redis_listener(control_channel, config=None):
         _pause_on_error()
         sys.exit(1)
 
+    config['embedded_redis'] = config.get('embedded_redis', True)
+    config['redis_port'] = int(os.getenv('REDIS_PORT', config.get('redis_port', DEFAULT_REDIS_PORT)))
+
+    from utils.redis_config import ensure_redis_password
+    config['redis_password'] = ensure_redis_password(config)
+    os.environ['REDIS_PASSWORD'] = config['redis_password']
+
     config.update({'redis_control_channel': control_channel})
     save_config(config)
 
+    from utils.pack_env import is_packaged
+
     run_in_foreground = (
-        getattr(sys, 'frozen', False)
+        os.getenv('DOUYIN_LIVE_FOREGROUND', '').lower() in ('1', 'true', 'yes')
+        or os.getenv('DOUYIN_LIVE_GUI', '').lower() in ('1', 'true', 'yes')
+        or is_packaged()
+        or getattr(sys, 'frozen', False)
         or hasattr(sys, '_MEIPASS')
         or os.path.exists('/.dockerenv')
         or os.getenv('RUN_IN_FOREGROUND', '').lower() in ('1', 'true', 'yes')
@@ -92,7 +119,7 @@ def start_redis_listener(control_channel, config=None):
             sys.stdout.flush()
             print('Redis 监听服务启动中...')
             print(f'控制频道: {control_channel}')
-            print(f'Redis: {os.getenv("REDIS_HOST", "127.0.0.1")}:{os.getenv("REDIS_PORT", "6379")}')
+            print(f'Redis: {os.getenv("REDIS_HOST", "127.0.0.1")}:{os.getenv("REDIS_PORT", str(DEFAULT_REDIS_PORT))}')
             print('控制消息: {"action": "start"|"stop", "live_id": "房间号", "cookie": "..."}')
             sys.stdout.flush()
             try:
@@ -101,6 +128,7 @@ def start_redis_listener(control_channel, config=None):
             finally:
                 from utils.redis_bootstrap import stop_embedded_redis
                 stop_embedded_redis()
+                print('[redis] 内置 Redis 已停止')
             return
 
         manager_exe_path = os.path.join(_app_dir(), 'live_manager.exe')
@@ -141,6 +169,13 @@ def start_redis_listener(control_channel, config=None):
 
 
 def main():
+    if should_use_gui():
+        os.environ['DOUYIN_LIVE_GUI'] = '1'
+        os.environ['DOUYIN_LIVE_FOREGROUND'] = '1'
+        from utils.launcher_gui import run_gui
+        run_gui()
+        return
+
     config = load_config()
     control_channel = config.get('redis_control_channel', 'dy_live:control')
     start_redis_listener(control_channel, config)

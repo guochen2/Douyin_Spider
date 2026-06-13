@@ -6,9 +6,9 @@ import time
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-from utils.console_util import setup_console_utf8
-
-setup_console_utf8()
+if os.getenv('DOUYIN_LIVE_GUI', '').lower() not in ('1', 'true', 'yes'):
+    from utils.console_util import setup_console_utf8
+    setup_console_utf8()
 
 import utils.redis_util as redis_util
 from builder.auth import DouyinAuth
@@ -16,6 +16,7 @@ from dy_live.server import DouyinLive, get_config_file, load_config
 
 DEFAULT_CONTROL_CHANNEL = 'dy_live:control'
 HEARTBEAT_KEY_PREFIX = 'dy_live:heartbeat:'
+_active_manager = None
 HEARTBEAT_CHECK_INTERVAL = 5
 HEARTBEAT_START_GRACE_SECONDS = 15
 HEARTBEAT_MISS_THRESHOLD = 3
@@ -30,6 +31,14 @@ def create_live_auth(cookie_str):
 
 def build_heartbeat_key(live_id):
     return f'{HEARTBEAT_KEY_PREFIX}{live_id}'
+
+
+def request_stop():
+    mgr = _active_manager
+    if mgr is not None:
+        mgr.stop()
+        return True
+    return False
 
 
 def parse_control_command(raw):
@@ -161,6 +170,8 @@ class LiveRoomManager:
         self._workers = {}
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
+        self._stopped = False
+        self._command_thread = None
         self._stats = {'started': 0, 'stopped': 0, 'commands': 0}
 
     def _on_worker_stopped(self, live_id, worker):
@@ -276,10 +287,16 @@ class LiveRoomManager:
                     if data is not None:
                         self._handle_command(data)
             except Exception as e:
+                if self._stop_event.is_set():
+                    break
                 print(f'[manager] 控制频道监听异常: {e}')
                 if self._stop_event.wait(3):
                     break
 
+        try:
+            pubsub.unsubscribe(self.control_channel)
+        except Exception:
+            pass
         try:
             pubsub.close()
         except Exception:
@@ -296,16 +313,19 @@ class LiveRoomManager:
             f'检测间隔={self.heartbeat_check_interval}s'
         )
 
-        command_thread = threading.Thread(
+        self._command_thread = threading.Thread(
             target=self._command_loop,
             name='live-command',
             daemon=True,
         )
-        command_thread.start()
+        self._command_thread.start()
 
         try:
-            while not self._stop_event.is_set():
-                time.sleep(10)
+            while True:
+                if self._stop_event.wait(10):
+                    break
+                if self._stop_event.is_set():
+                    break
                 with self._lock:
                     active = len(self._workers)
                 try:
@@ -315,7 +335,10 @@ class LiveRoomManager:
                         ex=30,
                     )
                 except Exception as e:
-                    print(f'[manager] 写入服务端运行数失败: {e}')
+                    if not self._stop_event.is_set():
+                        print(f'[manager] 写入服务端运行数失败: {e}')
+                if self._stop_event.is_set():
+                    break
                 print(
                     f'[manager] 心跳: 运行中={active}, '
                     f'累计启动={self._stats["started"]}, '
@@ -325,10 +348,19 @@ class LiveRoomManager:
         except KeyboardInterrupt:
             print('\n[manager] 收到退出信号')
         finally:
-            self.stop()
+            if not self._stopped:
+                self.stop()
 
     def stop(self):
+        if self._stopped:
+            return
+        self._stopped = True
         self._stop_event.set()
+
+        command_thread = self._command_thread
+        if command_thread and command_thread.is_alive():
+            command_thread.join(timeout=5)
+
         with self._lock:
             live_ids = list(self._workers.keys())
         for live_id in live_ids:
@@ -341,6 +373,7 @@ class LiveRoomManager:
 
 
 def run_from_config(config=None):
+    global _active_manager
     config_path = get_config_file()
     if config is None:
         config = load_config()
@@ -363,7 +396,11 @@ def run_from_config(config=None):
         reconnect_delay=reconnect_delay,
         heartbeat_check_interval=heartbeat_check_interval,
     )
-    manager.start()
+    _active_manager = manager
+    try:
+        manager.start()
+    finally:
+        _active_manager = None
 
 
 if __name__ == '__main__':
