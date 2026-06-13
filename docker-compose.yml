@@ -1,14 +1,34 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: douyin-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-douyin_local_redis} --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli -a douyin_local_redis ping | grep -q PONG']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   douyin-spider:
     build: .
     image: douyin-spider:latest
     container_name: douyin-spider
     restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
     command: python launcher.py
     environment:
-      REDIS_HOST: ${REDIS_HOST:-39.98.176.249}
-      REDIS_PORT: ${REDIS_PORT:-3521}
-      REDIS_DB: ${REDIS_DB:-2}
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-bsUb8C2BrdkEHs6C637E4EENSuQ5e8}
+      EMBEDDED_REDIS: docker
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: ${REDIS_DB:-0}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-douyin_local_redis}
     volumes:
       - ./launcher_config.json:/app/launcher_config.json
+
+volumes:
+  redis_data:

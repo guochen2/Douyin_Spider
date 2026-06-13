@@ -29,4 +29,9 @@ ENV/
 env.bak/
 venv.bak/
 datas
-/dy_live/launcher_config.json
+tools/redis/
+build/obf/
+build/pyinstaller/
+redis-data/
+packaging/*.spec
+!packaging/launcher-windows.spec

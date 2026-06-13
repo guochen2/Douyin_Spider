@@ -35,41 +35,56 @@ subprocess.Popen = _patched_popen
 
 import execjs
 
-if getattr(sys, 'frozen', None):
-    basedir = sys._MEIPASS
-else:
-    basedir = path.dirname(__file__)
+_login_js = None
+_dy_js = None
+_sign_js = None
 
 
-try:
-    node_modules = path.join(basedir, 'static', 'node_modules')
-    login_path = path.join(basedir, 'static', 'login.js')
-    login_js = execjs.compile(open(login_path, 'r', encoding='utf-8').read(), cwd=node_modules)
-except:
-    node_modules = path.join(basedir, '..', 'static', 'node_modules')
-    login_path = path.join(basedir, '..', 'static', 'login.js')
-    login_js = execjs.compile(open(login_path, 'r', encoding='utf-8').read(), cwd=node_modules)
+def _resource_base():
+    if getattr(sys, 'frozen', False):
+        return sys._MEIPASS
+    return path.dirname(path.dirname(path.abspath(__file__)))
+
+
+def _compile_js(relative_js, cwd_name='node_modules'):
+    base = _resource_base()
+    js_path = path.join(base, relative_js)
+    cwd = path.join(base, cwd_name)
+    if not path.isfile(js_path):
+        raise FileNotFoundError(f'未找到 JS 文件: {js_path}')
+    with open(js_path, 'r', encoding='utf-8') as f:
+        return execjs.compile(f.read(), cwd=cwd)
+
+
+def _get_login_js():
+    global _login_js
+    if _login_js is None:
+        _login_js = _compile_js('static/login.js')
+    return _login_js
+
+
+def _get_dy_js():
+    global _dy_js
+    if _dy_js is None:
+        _dy_js = _compile_js('static/dy_ab.js')
+    return _dy_js
+
+
+def _get_sign_js():
+    global _sign_js
+    if _sign_js is None:
+        _sign_js = _compile_js('static/dy_live_sign.js')
+    return _sign_js
 
 
 def generateSecretPhoneNum(phone):
-    sign = login_js.call('generateSecretPhoneNum', phone)
-    return sign
-def generateSecretCode(phone, code):
-    sign = login_js.call('generateSecretCode', phone, code)
+    sign = _get_login_js().call('generateSecretPhoneNum', phone)
     return sign
 
-try:
-    node_modules = path.join(basedir, 'node_modules')
-    dy_path = path.join(basedir, 'static', 'dy_ab.js')
-    dy_js = execjs.compile(open(dy_path, 'r', encoding='utf-8').read(), cwd=node_modules)
-    sign_path = path.join(basedir, 'static', 'dy_live_sign.js')
-    sign_js = execjs.compile(open(sign_path, 'r', encoding='utf-8').read(), cwd=node_modules)
-except:
-    node_modules = path.join(basedir, '..', 'node_modules')
-    dy_path = path.join(basedir, '..', 'static', 'dy_ab.js')
-    dy_js = execjs.compile(open(dy_path, 'r', encoding='utf-8').read(), cwd=node_modules)
-    sign_path = path.join(basedir, '..', 'static', 'dy_live_sign.js')
-    sign_js = execjs.compile(open(sign_path, 'r', encoding='utf-8').read(), cwd=node_modules)
+
+def generateSecretCode(phone, code):
+    sign = _get_login_js().call('generateSecretCode', phone, code)
+    return sign
 
 
 def trans_cookies(cookies_str):
@@ -87,26 +102,26 @@ def trans_cookies(cookies_str):
 
 # 私信传obj, 其他的拼接
 def generate_req_sign(e, priK):
-    sign = dy_js.call('get_req_sign', e, priK)
+    sign = _get_dy_js().call('get_req_sign', e, priK)
     return sign
 
 
 # query, data都是拼接字符串
 def generate_a_bogus(query, data=""):
-    a_bogus = dy_js.call('get_ab', query, data)
+    a_bogus = _get_dy_js().call('get_ab', query, data)
     return a_bogus
 
 
 def generate_signature(room_id, user_unique_id):
     raw_string = f"live_id=1,aid=6383,version_code=180800,webcast_sdk_version=1.0.15,room_id={room_id},sub_room_id=,sub_channel_id=,did_rule=3,user_unique_id={user_unique_id},device_platform=web,device_type=,ac=,identity=audience"
     x_ms_stub = hashlib.md5(raw_string.encode("utf-8")).hexdigest()
-    result = sign_js.call("get_signature", x_ms_stub)
+    result = _get_sign_js().call("get_signature", x_ms_stub)
     return result.get("X-Bogus")
 
 
 # 传递私钥
 def generate_ree_key(prik):
-    ree_key = dy_js.call('get_ree_key', prik)
+    ree_key = _get_dy_js().call('get_ree_key', prik)
     return ree_key
 
 

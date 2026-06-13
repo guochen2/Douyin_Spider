@@ -26,7 +26,7 @@ tar -czf "%ARCHIVE%" ^
   --exclude=.env ^
   --exclude=.env* ^
   Dockerfile docker-compose.yml .dockerignore requirements-docker.txt package-docker.json ^
-  launcher.py launcher_config.json ^
+  launcher.py launcher_config.json config\redis.conf ^
   build-linux.sh run-on-linux.sh ^
   builder dy_apis dy_live static utils scripts
 
