@@ -49,6 +49,10 @@ class RedisUtil:
         self.pool = None
         self.client = None
 
+    def describe_connection(self):
+        self._ensure_connected()
+        return _load_redis_config()
+
     def get(self, key):
         self._ensure_connected()
         try:

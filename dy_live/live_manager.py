@@ -12,7 +12,7 @@ if os.getenv('DOUYIN_LIVE_GUI', '').lower() not in ('1', 'true', 'yes'):
 
 import utils.redis_util as redis_util
 from builder.auth import DouyinAuth
-from dy_live.server import DouyinLive, get_config_file, load_config
+from dy_live.server import DouyinLive, GIFT_HANDLER_VERSION, get_config_file, load_config
 
 DEFAULT_CONTROL_CHANNEL = 'dy_live:control'
 HEARTBEAT_KEY_PREFIX = 'dy_live:heartbeat:'
@@ -303,6 +303,14 @@ class LiveRoomManager:
             pass
 
     def start(self):
+        import dy_live.server as server_module
+
+        redis_cfg = redis_util.redis_util.describe_connection()
+        print(f'[manager] server.py={server_module.__file__}')
+        print(f'[manager] gift_handler={GIFT_HANDLER_VERSION}')
+        print(
+            f'[manager] Redis={redis_cfg["host"]}:{redis_cfg["port"]} db={redis_cfg["db"]}'
+        )
         print(f'[manager] 监听 Redis 控制频道: {self.control_channel}')
         print(
             '[manager] 控制消息格式: '

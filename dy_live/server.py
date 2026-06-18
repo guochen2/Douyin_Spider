@@ -20,6 +20,8 @@ import utils.common_util as common_util
 from utils.dy_util import generate_signature
 import utils.redis_util as redis_util
 
+GIFT_HANDLER_VERSION = 'v20260610'
+
 class DouyinLive:
     def __init__(self, live_id, auth_):
         self.auth_ = auth_
@@ -38,6 +40,8 @@ class DouyinLive:
         self._ws_connected = False
         self._seen_msg_keys = set()
         self._seen_msg_order = deque(maxlen=5000)
+        self._seen_gift_keys = set()
+        self._seen_gift_order = deque(maxlen=10000)
 
     LIVE_ROOM_STATUSES = {'2'}
     ROOM_CHECK_INTERVAL = 15.0
@@ -144,29 +148,101 @@ class DouyinLive:
             self._seen_msg_keys.discard(old)
         return True
 
+    def _gift_dedup_key(self, item, message):
+        msg_id = int(getattr(item, 'msgId', 0) or 0)
+        offset = int(getattr(item, 'offset', 0) or 0)
+        if msg_id or offset:
+            return ('msg', msg_id, offset)
+        payload = bytes(item.payload or b'')
+        if payload:
+            return ('payload', hashlib.md5(payload).hexdigest())
+        trace = str(message.traceId or '').strip()
+        nickname = message.user.nickname if message.user else ''
+        gift_id = str(message.giftId or '')
+        log_id = str(message.logId or '')
+        return (
+            'fallback',
+            trace,
+            log_id,
+            gift_id,
+            nickname,
+            int(message.totalCount or 0),
+            int(message.repeatCount or 0),
+        )
+
+    def _remember_gift_key(self, dedup_key):
+        if dedup_key in self._seen_gift_keys:
+            return False
+        self._seen_gift_keys.add(dedup_key)
+        self._seen_gift_order.append(dedup_key)
+        while len(self._seen_gift_order) > 10000:
+            old = self._seen_gift_order.popleft()
+            self._seen_gift_keys.discard(old)
+        return True
+
+    def _resolve_gift_publish_count(self, message):
+        """
+        repeatCount 为本次推送数量；连击礼物会多次推送且 repeatCount 通常为 1。
+        无 repeatCount 时回退到 groupCount / totalCount。
+        """
+        repeat = max(int(message.repeatCount or 0), 0)
+        if repeat > 0:
+            return repeat
+        group = max(int(message.groupCount or 0), 0)
+        if group > 0:
+            return group
+        total = max(int(message.totalCount or 0), 0)
+        if total > 0:
+            return total
+        combo = max(int(message.comboCount or 0), 0)
+        if combo > 0:
+            return combo
+        return 1
+
+    def _handle_gift_message(self, item):
+        pdid = self._channel()
+        message = Live_pb2.GiftMessage()
+        message.ParseFromString(item.payload)
+
+        dedup_key = self._gift_dedup_key(item, message)
+        if not self._remember_gift_key(dedup_key):
+            return
+
+        gift_count = self._resolve_gift_publish_count(message)
+        if gift_count <= 0:
+            return
+
+        nickname = message.user.nickname if message.user else ''
+        to_nickname = message.toUser.nickname if message.toUser else ''
+        gift_name = message.gift.name if message.gift else ''
+        if not gift_name:
+            return
+
+        subs = redis_util.redis_util.publish(pdid, json.dumps({
+            'type': 'gift',
+            'from_sec_uid': message.user.sec_uid if message.user else '',
+            'from_nickname': nickname,
+            'to_sec_uid': message.toUser.sec_uid if message.toUser else '',
+            'to_nickname': to_nickname,
+            'gift_name': gift_name,
+            'gift_count': gift_count,
+            'trace_id': str(message.traceId or ''),
+            'msg_id': getattr(item, 'msgId', 0) or 0,
+        }, ensure_ascii=False))
+        # print(
+        #     f'[gift-pub][{GIFT_HANDLER_VERSION}] channel={pdid} '
+        #     f'user={nickname} gift={gift_name} count={gift_count} subs={subs} '
+        #     f'repeat={message.repeatCount} total={message.totalCount}'
+        # )
+        if subs <= 0:
+            print(
+                f'[{self.live_id}] 警告: 礼物已发布但 Redis 无订阅者 channel={pdid} '
+                f'(请确认客户端与 Spider 连接同一 Redis)'
+            )
+
     def _dispatch_message(self, item):
         pdid = self._channel()
-        if item.method == 'WebcastGiftMessage':
-            message = Live_pb2.GiftMessage()
-            message.ParseFromString(item.payload)
-            # print(
-            #     f'\033[1;37;40m[礼物]{message.user.nickname}\033[m '
-            #     f'送给 {message.toUser.nickname} \033[1;37;41m{message.gift.name}\033[m x {message.totalCount}'
-            # )
-            key_md5 = f'mc:{pdid}_{message.traceId}'
-            if redis_util.redis_util.exists(key_md5) is True:
-                return
-            redis_util.redis_util.set(key_md5, 1, 60)
-            redis_util.redis_util.publish(pdid, json.dumps({
-                'type': 'gift',
-                'from_sec_uid': message.user.sec_uid,
-                'from_nickname': message.user.nickname,
-                'to_sec_uid': message.toUser.sec_uid,
-                'to_nickname': message.toUser.nickname,
-                'gift_name': message.gift.name,
-                'gift_count': message.totalCount,
-            }, ensure_ascii=False))
-        elif item.method == 'WebcastChatMessage':
+        if item.method == 'WebcastChatMessage':
             message = Live_pb2.ChatMessage()
             message.ParseFromString(item.payload)
             # print(f'\033[1;37;40m[消息]{message.user.nickname}\033[m : {message.content}')
@@ -227,6 +303,12 @@ class DouyinLive:
         if not response.messagesList:
             return 0
         for item in response.messagesList:
+            if item.method == 'WebcastGiftMessage':
+                try:
+                    self._handle_gift_message(item)
+                except Exception as e:
+                    print(f'[{self.live_id}] 解析礼物失败: {e}')
+                continue
             if not self._should_dispatch_item(item):
                 continue
             try:
