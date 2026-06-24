@@ -203,31 +203,49 @@ class DouyinLive:
         pdid = self._channel()
         message = Live_pb2.GiftMessage()
         message.ParseFromString(item.payload)
+        # print(f'[{self.live_id}] 礼物消息:{message}');
+        # dedup_key = self._gift_dedup_key(item, message)
+        # if not self._remember_gift_key(dedup_key):
+        #     return
 
-        dedup_key = self._gift_dedup_key(item, message)
-        if not self._remember_gift_key(dedup_key):
-            return
+        # gift_count = self._resolve_gift_publish_count(message)
+        # if gift_count <= 0:
+        #     return
 
-        gift_count = self._resolve_gift_publish_count(message)
-        if gift_count <= 0:
+        # nickname = message.user.nickname if message.user else ''
+        # to_nickname = message.toUser.nickname if message.toUser else ''
+        # gift_name = message.gift.name if message.gift else ''
+        # if not gift_name:
+        #     return
+        # print(f'[{self.live_id}] 礼物消息:{message.traceId}');
+        # print(f'[{self.live_id}] 礼物消息:{message}');
+        # print(f'[{self.live_id}] 礼物消息:{message.giftId}');
+        # # print(f'[{self.live_id}] 礼物消息:{message.user}');
+        # print(f'[{self.live_id}] 礼物消息:{message.user.nickname}');
+        # print(f'[{self.live_id}] 礼物消息:{message.toUser}');
+        # print(f'[{self.live_id}] 礼物消息:{message.gift.name}');
+        # print(f'[{self.live_id}] 礼物消息:{message.traceId}');
+        key_md5=f"mc:{pdid}_{message.traceId}"
+        if redis_util.redis_util.exists(key_md5):
+            # redis_util.redis_util.delete(key_md5)
+            print('礼物消息处理过了')
+            # print(f'\033[1;37;40m[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 送给 \033[1;37;40m{message.toUser.sec_uid} - {message.toUser.nickname}\033[m \033[1;37;41m{message.gift.name}\033[m x {message.totalCount}')
             return
-
-        nickname = message.user.nickname if message.user else ''
-        to_nickname = message.toUser.nickname if message.toUser else ''
-        gift_name = message.gift.name if message.gift else ''
-        if not gift_name:
-            return
+        redis_util.redis_util.set(key_md5,1,60)
+        # print(message.gift.combo)
+        # print(f'\033[1;37;40m[礼物]SEC_UID = {message.user.sec_uid} - {message.user.nickname}\033[m 送给 \033[m \033[1;37;41m{message.gift.name}\033[m x {message.totalCount}')
 
         subs = redis_util.redis_util.publish(pdid, json.dumps({
-            'type': 'gift',
-            'from_sec_uid': message.user.sec_uid if message.user else '',
-            'from_nickname': nickname,
+             'type': 'gift',
+            'from_sec_uid': message.user.sec_uid,
+            'from_nickname': message.user.nickname,
             'to_sec_uid': message.toUser.sec_uid if message.toUser else '',
-            'to_nickname': to_nickname,
-            'gift_name': gift_name,
-            'gift_count': gift_count,
+            'to_nickname':message.toUser.nickname if message.toUser else '',
+            'gift_name': message.gift.name,
+            'gift_count': message.totalCount,
             'trace_id': str(message.traceId or ''),
             'msg_id': getattr(item, 'msgId', 0) or 0,
+            
         }, ensure_ascii=False))
         # print(
         #     f'[gift-pub][{GIFT_HANDLER_VERSION}] channel={pdid} '
