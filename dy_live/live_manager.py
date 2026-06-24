@@ -3,6 +3,7 @@ import os
 import sys
 import threading
 import time
+from typing import Dict
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
@@ -173,6 +174,8 @@ class LiveRoomManager:
         self._stopped = False
         self._command_thread = None
         self._stats = {'started': 0, 'stopped': 0, 'commands': 0}
+        self._starting_live_ids = set()
+        self._live_locks: Dict[str, threading.Lock] = {}  # 每个live_id独立锁
 
     def _on_worker_stopped(self, live_id, worker):
         with self._lock:
@@ -208,29 +211,53 @@ class LiveRoomManager:
         ).start()
 
     def _start_room(self, live_id, cookie):
+        # 1. 获取当前live_id对应的专属锁（字典加全局锁保护）
+        live_lock: threading.Lock
         with self._lock:
-            old_worker = self._workers.pop(live_id, None)
-        if old_worker:
-            old_worker.live.stop()
-            threading.Thread(
-                target=old_worker.stop,
-                name=f'stop-before-start-{live_id}',
-                daemon=True,
-            ).start()
+            if live_id not in self._live_locks:
+                self._live_locks[live_id] = threading.Lock()
+            live_lock = self._live_locks[live_id]
 
-        worker = LiveRoomWorker(
-            live_id,
-            cookie,
-            self.reconnect_delay,
-            heartbeat_key=build_heartbeat_key(live_id),
-            heartbeat_check_interval=self.heartbeat_check_interval,
-            on_stopped=self._on_worker_stopped,
-        )
-        with self._lock:
-            self._workers[live_id] = worker
-        worker.start()
-        self._stats['started'] += 1
-        print(f'[manager] 启动监听: {live_id} (当前 {len(self._workers)} 个)')
+        # 2. 非阻塞抢锁：同一live_id已有线程执行，直接返回
+        if not live_lock.acquire(blocking=False):
+            print(f"[manager] live_id {live_id} 正在启动中，跳过本次请求")
+            return
+
+        try:
+            # ---------------- 原有业务逻辑 ----------------
+            with self._lock:
+                old_worker = self._workers.pop(live_id, None)
+            if old_worker:
+                old_worker.live.stop()
+                threading.Thread(
+                    target=old_worker.stop,
+                    name=f'stop-before-start-{live_id}',
+                    daemon=True,
+                ).start()
+
+            worker = LiveRoomWorker(
+                live_id,
+                cookie,
+                self.reconnect_delay,
+                heartbeat_key=build_heartbeat_key(live_id),
+                heartbeat_check_interval=self.heartbeat_check_interval,
+                on_stopped=self._on_worker_stopped,
+            )
+            with self._lock:
+                self._workers[live_id] = worker
+            worker.start()
+            self._stats['started'] += 1
+            print(f'[manager] 启动监听: {live_id} (当前 {len(self._workers)} 个)')
+            # ----------------------------------------------
+        finally:
+            # 释放当前live_id的锁
+            live_lock.release()
+            # 清理无占用的锁，防止字典无限膨胀
+            with self._lock:
+                # 无等待线程、且不存在worker则删除锁
+                if live_id in self._live_locks and live_lock.acquire(blocking=False):
+                    self._live_locks.pop(live_id, None)
+                    live_lock.release()
 
     def _publish_room_event(self, live_id, event_type, message=None):
         payload = {'type': event_type, 'live_id': live_id}
